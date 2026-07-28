@@ -1,0 +1,14 @@
+# LCDwiki ES3C28P (ESP32-S3 N16R8) has 16MB flash. Layout:
+#   nvs            24K   — Wi-Fi calib + settings (thresholds, interval, units) + cloud HWM
+#   phy_init       4K    — RF calibration data
+#   factory app    4M    — single-app slot for v1 (no OTA yet)
+#   storage        ~12M  — LittleFS for the temperature reading log
+#
+# The reading log is the one partition that meaningfully grows: 16 B/record at
+# one record a minute is ~23 KB/day. storage/ caps and rotates it well below this
+# size (see storage.hpp) — the headroom is for future use, not for an uncapped log.
+# Name,   Type, SubType,  Offset,   Size,    Flags
+nvs,      data, nvs,      0x9000,   0x6000,
+phy_init, data, phy,      0xf000,   0x1000,
+factory,  app,  factory,  0x10000,  0x400000,
+storage,  data, littlefs, 0x410000, 0xBF0000,

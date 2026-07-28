@@ -1,0 +1,14 @@
+## Managed dependencies for the thermopost main component.
+## Pulled at build time by `idf.py reconfigure` into ./managed_components/.
+##
+## Kept deliberately thin: the panel, touch, LVGL and codec dependencies are
+## added when the code that needs them lands — and *which* panel/touch driver we
+## ask for depends on what the bring-up probe finds, so committing to one now
+## would be guessing.
+
+dependencies:
+  idf:
+    version: ">=5.5,<6.0"
+
+  ## LittleFS VFS layer — the temperature log lives on the `storage` partition.
+  joltwallet/littlefs: "^1.16.4"

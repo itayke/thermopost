@@ -1,0 +1,51 @@
+# Consulted only when there is no `sdkconfig`. To re-apply after a build:
+#   rm sdkconfig && idf.py build
+#
+# LVGL, Wi-Fi and LittleFS options land here as their milestones do — adding a
+# CONFIG_LV_* / CONFIG_ESP_WIFI_* key before the component that defines it is a
+# dependency produces an "unknown config" warning and is silently ignored.
+
+# --- Target ---
+CONFIG_IDF_TARGET="esp32s3"
+
+# --- Flash & PSRAM (ESP32-S3 N16R8: 16MB QIO flash + 8MB OPI PSRAM) ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# --- CPU ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# --- Custom partition table (see partitions.csv) ---
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- Console ---
+# Deliberately belt-and-suspenders for bring-up. Unlike espressopost's Waveshare
+# board (native USB only, so the console had to BE USB-Serial-JTAG), it is not yet
+# confirmed whether this board's Type-C port is the ESP32-S3's native USB or a
+# UART bridge chip. Primary=UART0 with the USB-Serial-JTAG secondary mirror on
+# means log output appears on whichever one is physically wired — and the
+# Milestone 0 probe is worthless if its output goes nowhere.
+#
+# Once the port is identified, collapse this to the single correct primary; the
+# serial REPL (`cloud set-url` etc. in Milestone 8) needs a primary that can also
+# READ keystrokes, which the secondary mirror cannot do.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# --- C++ ---
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_CXX_RTTI=n
+
+# --- FreeRTOS tick at 1kHz so LVGL animations stay smooth ---
+CONFIG_FREERTOS_HZ=1000
