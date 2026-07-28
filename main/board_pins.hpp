@@ -44,7 +44,11 @@ inline constexpr int kLcdSpiFreqHz = 40'000'000;
 inline constexpr int kLcdBitsPerPixel = 16;  // RGB565
 
 // ---------------------------------------------------------------------------
-// Internal I²C bus (I2C0) — capacitive touch + the ES8311 codec's control port
+// I²C bus (I2C0) — capacitive touch, the ES8311 codec's control port, and the
+// MCP9808 hanging off the board's 4-pin "I2C" connector.
+//
+// Confirmed against the physical board: the silkscreen beside that connector
+// reads 3.3V / GND / IO15(SCL) / IO16(SDA).
 // ---------------------------------------------------------------------------
 inline constexpr int kI2cSda = 16;
 inline constexpr int kI2cScl = 15;
@@ -75,31 +79,47 @@ inline constexpr int kI2sDin  = 8;  // codec → ESP32-S3 (mic; unused in v1)
 inline constexpr int kAudioAmpEnable = 1;
 
 // ---------------------------------------------------------------------------
-// External expansion header — free GPIOs: 2, 3, 14, 21
+// MCP9808 surface-temperature sensor — on the shared I²C bus above, via the
+// board's 4-pin "I2C" connector (3.3V / GND / IO15 / IO16).
 // ---------------------------------------------------------------------------
-// MCP9808 surface-temperature sensor on its OWN I²C bus (I2C1), deliberately not
-// the internal bus. Two reasons, in order of weight:
-//   1. The ES8311 answers at 0x18/0x19 and the MCP9808's default is 0x18 — a
-//      direct address collision on the shared bus.
-//   2. Electrically cleaner: the sensor sits on a flying lead at the measured
-//      surface, and a long stub off the bus that also clocks touch at 400 kHz is
-//      asking for trouble.
-// GPIO3 is skipped on purpose — it is an ESP32-S3 strapping pin (JTAG source
-// select), so it is a poor choice for a line that idles high with a pull-up.
-inline constexpr int kSensorSda = 2;
-inline constexpr int kSensorScl = 14;
+// An earlier revision put this on a private I2C1 bus over the expansion header,
+// to dodge an address collision: the ES8311 answers at 0x18/0x19 and the
+// MCP9808's default is 0x18. Two facts off the physical board retire that plan.
+//
+// First, the expansion header carries ONLY IO2/IO3/IO14/IO21 — no 3.3V, no GND.
+// A private bus would still have to steal power from the I2C connector, so it
+// costs two connectors instead of one and buys nothing.
+//
+// Second, the collision is a non-problem: the breakout exposes A0/A1/A2, which
+// exist precisely to move the device. Strapping A1 high puts it at 0x1A, clear
+// of both codec addresses. Sharing is otherwise harmless — ESP-IDF's i2c_master
+// driver takes scl_speed_hz *per device*, so the sensor can clock at 100 kHz on
+// its flying lead while touch keeps its 400 kHz.
+//
+// Address = 0x18 + (A2<<2 | A1<<1 | A0), latched at power-up — a strap change
+// needs a full power cycle, not a reset. The driver does not hardcode this: it
+// scans 0x18..0x1F and identifies the part by its manufacturer ID, so any strap
+// configuration works and the codec can never be mistaken for the sensor.
+inline constexpr uint8_t kSensorI2cAddrDefault = 0x1A;  // A1 strapped high
+inline constexpr uint8_t kSensorI2cAddrFirst   = 0x18;  // scan range, inclusive
+inline constexpr uint8_t kSensorI2cAddrLast    = 0x1F;
 inline constexpr int kSensorI2cFreqHz = 100'000;  // conservative for a flying lead
 
-// MCP9808 address is 0x18..0x1F via the A0/A1/A2 straps; breakouts ship all-low.
-inline constexpr uint8_t kSensorI2cAddr = 0x18;
-
-// MCP9808 ALERT — open-drain, needs a pull-up (Adafruit-style breakouts have
-// one). Unused in v1, but wired now because GPIO21 is RTC-capable: it lets a
-// hardware over-temperature alarm wake the SoC from deep sleep via ext1 without
-// the firmware sampling at all.
+// MCP9808 ALERT — open-drain, needs a pull-up. Unused in v1, but GPIO21 is
+// reserved for it because GPIO21 is RTC-capable: it would let a hardware
+// over-temperature alarm wake the SoC from deep sleep via ext1 without the
+// firmware sampling at all.
 inline constexpr int kSensorAlert = 21;
 
-// GPIO3 intentionally left free for future expansion.
+// ---------------------------------------------------------------------------
+// Expansion header — IO2, IO3, IO14, IO21. Signal pins only, no power rail.
+// GPIO3 is an ESP32-S3 strapping pin (JTAG source select), so it is a poor
+// choice for anything that idles high.
+// ---------------------------------------------------------------------------
+inline constexpr int kExtIo2  = 2;
+inline constexpr int kExtIo3  = 3;
+inline constexpr int kExtIo14 = 14;
+inline constexpr int kExtIo21 = 21;  // == kSensorAlert when the ALERT line is wired
 
 // ---------------------------------------------------------------------------
 // Battery — TP4054 charger; divided battery voltage sensed on GPIO9 (ADC1_CH8)

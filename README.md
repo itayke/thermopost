@@ -32,21 +32,40 @@ runs. That is what the bring-up probe below exists to settle.
 
 ### Wiring the MCP9808
 
-The temperature sensor is not part of the module — it goes on the expansion
-header, on its **own I²C bus**:
+The temperature sensor is not part of the module. It goes on the board's 4-pin
+**`I2C` connector** (silkscreened `3.3V / GND / IO15(SCL) / IO16(SDA)`), which
+breaks out the same bus the touch controller and codec are on:
 
-| MCP9808 | Board | Note |
-|---|---|---|
-| SDA | GPIO2 | |
-| SCL | GPIO14 | |
-| ALERT | GPIO21 | optional; open-drain, needs a pull-up |
-| VDD / GND | 3V3 / GND | |
+| MCP9808 breakout | Board |
+|---|---|
+| VCC | `3.3V` |
+| GND | `GND` |
+| SCL | `IO15(SCL)` |
+| SDA | `IO16(SDA)` |
+| **A1** | **`3.3V`** — see below |
+| A0, A2 | `GND` |
+| ALERT | leave open (optional: `IO21`, needs a pull-up) |
 
-Not the internal bus, for two reasons: the ES8311 codec answers at 0x18/0x19 and
-would **collide with the MCP9808's default 0x18**; and the sensor sits on a
-flying lead at the measured surface, which is a poor thing to hang off a bus also
-clocking touch at 400 kHz. GPIO3 is left free on purpose — it is an ESP32-S3
-strapping pin.
+**Strapping A1 high is the one non-obvious step.** The MCP9808's address is
+`0x18 + (A2<<2 | A1<<1 | A0)`, so it defaults to `0x18` — exactly where the
+ES8311 codec lives. A1 high moves it to `0x1A`, clear of both `0x18` and `0x19`.
+The straps are latched at power-up, so **a strap change needs a full power cycle,
+not a reset button press.**
+
+The firmware doesn't hardcode the address: it scans `0x18..0x1F` and identifies
+the part by its manufacturer ID, so any strap combination works and the codec
+can never be mistaken for the sensor. If you leave the straps alone, the probe
+will tell you the address collided and what to do about it.
+
+Sharing one bus is fine here — ESP-IDF's `i2c_master` driver takes
+`scl_speed_hz` *per device*, so the sensor clocks at 100 kHz on its flying lead
+while touch keeps its 400 kHz.
+
+The expansion header (`IO2 / IO3 / IO14 / IO21`) carries signal pins only — no
+3.3V or GND — so it can't host the sensor by itself. `IO21` is reserved for the
+optional ALERT line because it is RTC-capable, which would let a hardware
+over-temperature alarm wake the board from deep sleep. `IO3` is best left alone;
+it is an ESP32-S3 strapping pin.
 
 ## Build & flash
 

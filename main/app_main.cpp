@@ -18,9 +18,9 @@
 // and nothing else:
 //
 //   1. Is this really an ESP32-S3 N16R8 (16 MB flash + 8 MB PSRAM)?
-//   2. Who is on the internal I²C bus? Expect the touch controller at 0x38 and
-//      the ES8311 codec at 0x18 or 0x19.
-//   3. Is the MCP9808 alive on its own bus, and does it read a plausible room
+//   2. Who is on the I²C bus? Expect the touch controller at 0x38 and the
+//      ES8311 codec at 0x18 or 0x19.
+//   3. Is the MCP9808 alive on that same bus, and does it read a plausible room
 //      temperature?
 //   4. What does the LCD controller report as its ID?
 //   5. Does the backlight GPIO actually control the backlight?
@@ -151,10 +151,55 @@ bool list_has(const uint8_t* list, int n, uint8_t want) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Internal I²C bus — touch + codec
+// 2 & 3. The I²C bus — touch, codec, and the MCP9808
 // ---------------------------------------------------------------------------
-void probe_internal_i2c() {
-  ESP_LOGI(kTag, "--- 2. internal I2C0 (touch + codec, SDA=%d SCL=%d) ---",
+// All three share one bus (the board's 4-pin "I2C" connector breaks it out), so
+// one bus handle serves the whole section.
+
+// Read a 16-bit big-endian MCP9808 register.
+bool mcp_read_u16(i2c_master_dev_handle_t dev, uint8_t reg, uint16_t* out) {
+  uint8_t rx[2] = {};
+  if (i2c_master_transmit_receive(dev, &reg, 1, rx, 2, 100) != ESP_OK) return false;
+  *out = static_cast<uint16_t>((rx[0] << 8) | rx[1]);
+  return true;
+}
+
+// Find the MCP9808 by asking every address in its strap range who it is, rather
+// than trusting a configured address.
+//
+// This matters because the ES8311 sits at 0x18 or 0x19, inside that same range.
+// An address-only match would happily "find" the sensor at 0x18 and then read
+// codec registers as temperatures. The manufacturer ID makes the two
+// distinguishable no matter how the breakout's A0/A1/A2 are strapped, so the
+// wiring can change without the firmware caring.
+//
+// Returns the address, or 0 if no MCP9808 answered. `*out_dev` is left attached
+// on success for the caller to use and then remove.
+uint8_t find_mcp9808(i2c_master_bus_handle_t bus, i2c_master_dev_handle_t* out_dev) {
+  for (uint8_t a = board::kSensorI2cAddrFirst; a <= board::kSensorI2cAddrLast; ++a) {
+    if (i2c_master_probe(bus, a, /*timeout_ms=*/20) != ESP_OK) continue;
+
+    const i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = a,
+        .scl_speed_hz = board::kSensorI2cFreqHz,
+    };
+    i2c_master_dev_handle_t dev = nullptr;
+    if (i2c_master_bus_add_device(bus, &dev_cfg, &dev) != ESP_OK) continue;
+
+    uint16_t mfr = 0;
+    if (mcp_read_u16(dev, kMcpRegMfrId, &mfr) && mfr == kMcpMfrId) {
+      *out_dev = dev;
+      return a;
+    }
+    ESP_LOGD(kTag, "    0x%02X answered but is not an MCP9808 (mfr 0x%04X)", a, mfr);
+    i2c_master_bus_rm_device(dev);
+  }
+  return 0;
+}
+
+void probe_i2c() {
+  ESP_LOGI(kTag, "--- 2. I2C0 bus (touch + codec + sensor, SDA=%d SCL=%d) ---",
            board::kI2cSda, board::kI2cScl);
 
   const i2c_master_bus_config_t cfg = {
@@ -175,7 +220,7 @@ void probe_internal_i2c() {
   uint8_t found[16];
   const int n = scan_bus(bus, found, 16);
 
-  char detail[64];
+  char detail[80];
   std::snprintf(detail, sizeof(detail), "0x%02X", board::kTouchI2cAddr);
   check(list_has(found, n, board::kTouchI2cAddr), "touch controller present", detail);
 
@@ -187,80 +232,29 @@ void probe_internal_i2c() {
                              : "not at 0x18 or 0x19");
   check(codec_low || codec_high, "ES8311 codec present", detail);
 
-  i2c_del_master_bus(bus);
-}
+  ESP_LOGI(kTag, "--- 3. MCP9808 (identified by manufacturer ID, not address) ---");
 
-// ---------------------------------------------------------------------------
-// 3. Sensor I²C bus — MCP9808
-// ---------------------------------------------------------------------------
-void probe_sensor_i2c() {
-  ESP_LOGI(kTag, "--- 3. sensor I2C1 (MCP9808, SDA=%d SCL=%d) ---",
-           board::kSensorSda, board::kSensorScl);
-
-  const i2c_master_bus_config_t cfg = {
-      .i2c_port = I2C_NUM_1,
-      .sda_io_num = static_cast<gpio_num_t>(board::kSensorSda),
-      .scl_io_num = static_cast<gpio_num_t>(board::kSensorScl),
-      .clk_source = I2C_CLK_SRC_DEFAULT,
-      .glitch_ignore_cnt = 7,
-      .flags = {.enable_internal_pullup = true},
-  };
-  i2c_master_bus_handle_t bus = nullptr;
-  const esp_err_t bus_err = i2c_new_master_bus(&cfg, &bus);
-  if (bus_err != ESP_OK) {
-    check(false, "I2C1 bus init", esp_err_to_name(bus_err));
-    return;
-  }
-
-  uint8_t found[16];
-  const int n = scan_bus(bus, found, 16);
-
-  // The MCP9808 answers anywhere in 0x18..0x1F depending on its A0/A1/A2 straps,
-  // so accept the whole range rather than insisting on the all-low default —
-  // a breakout with a strap jumper closed is a wiring fact, not a failure.
-  uint8_t addr = 0;
-  for (uint8_t a = 0x18; a <= 0x1F && addr == 0; ++a) {
-    if (list_has(found, n, a)) addr = a;
-  }
+  i2c_master_dev_handle_t dev = nullptr;
+  const uint8_t addr = find_mcp9808(bus, &dev);
   if (addr == 0) {
-    check(false, "MCP9808 present", "nothing in 0x18..0x1F — is it wired up yet?");
+    // Distinguish "not wired" from "wired, but hiding behind the codec" — the
+    // one failure mode the shared bus introduces, and the one whose fix (strap
+    // A1 high) is not obvious from a bare "not found".
+    const bool range_busy = codec_low || codec_high;
+    check(false, "MCP9808 present",
+          range_busy ? "no MCP9808 in 0x18..0x1F — if it is wired, strap A1 high "
+                       "(the codec owns 0x18/0x19) and POWER CYCLE"
+                     : "nothing in 0x18..0x1F — is it wired up yet?");
     i2c_del_master_bus(bus);
     return;
   }
 
-  char detail[64];
-  std::snprintf(detail, sizeof(detail), "0x%02X", addr);
+  std::snprintf(detail, sizeof(detail), "0x%02X%s", addr,
+                addr == board::kSensorI2cAddrDefault ? " (A1 strapped high, as expected)" : "");
   check(true, "MCP9808 present", detail);
 
-  const i2c_device_config_t dev_cfg = {
-      .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-      .device_address = addr,
-      .scl_speed_hz = board::kSensorI2cFreqHz,
-  };
-  i2c_master_dev_handle_t dev = nullptr;
-  if (i2c_master_bus_add_device(bus, &dev_cfg, &dev) != ESP_OK) {
-    check(false, "MCP9808 attach", "i2c_master_bus_add_device failed");
-    i2c_del_master_bus(bus);
-    return;
-  }
-
-  auto read_u16 = [&](uint8_t reg, uint16_t* out) -> bool {
-    uint8_t rx[2] = {};
-    if (i2c_master_transmit_receive(dev, &reg, 1, rx, 2, 100) != ESP_OK) return false;
-    *out = static_cast<uint16_t>((rx[0] << 8) | rx[1]);
-    return true;
-  };
-
-  uint16_t mfr = 0;
-  if (read_u16(kMcpRegMfrId, &mfr)) {
-    std::snprintf(detail, sizeof(detail), "0x%04X (expect 0x%04X)", mfr, kMcpMfrId);
-    check(mfr == kMcpMfrId, "MCP9808 manufacturer ID", detail);
-  } else {
-    check(false, "MCP9808 manufacturer ID", "read failed");
-  }
-
   uint16_t dev_id = 0;
-  if (read_u16(kMcpRegDevId, &dev_id)) {
+  if (mcp_read_u16(dev, kMcpRegDevId, &dev_id)) {
     std::snprintf(detail, sizeof(detail), "device 0x%02X rev 0x%02X",
                   dev_id >> 8, dev_id & 0xFF);
     check((dev_id >> 8) == kMcpDevId, "MCP9808 device ID", detail);
@@ -276,7 +270,7 @@ void probe_sensor_i2c() {
   vTaskDelay(pdMS_TO_TICKS(300));  // t_CONV is 250 ms at the default 0.0625 °C resolution
 
   uint16_t raw = 0;
-  if (read_u16(kMcpRegAmbient, &raw)) {
+  if (mcp_read_u16(dev, kMcpRegAmbient, &raw)) {
     // Bits 15..13 are the alert flags, bit 12 is sign, bits 11..0 are the
     // magnitude in 1/16 °C (datasheet §5.1.3).
     const uint8_t upper = static_cast<uint8_t>(raw >> 8) & 0x1F;
@@ -285,8 +279,8 @@ void probe_sensor_i2c() {
     if (upper & 0x10) c -= 256.0f;  // sign bit set → below 0 °C
 
     std::snprintf(detail, sizeof(detail), "%.2f C / %.2f F", c, c * 1.8f + 32.0f);
-    // A plausible indoor reading is the real check — the IDs above prove the
-    // part is an MCP9808, this proves it is actually converting.
+    // A plausible indoor reading is the real check — the IDs prove the part is
+    // an MCP9808, this proves it is actually converting.
     check(c > -40.0f && c < 85.0f, "MCP9808 reads a temperature", detail);
   } else {
     check(false, "MCP9808 reads a temperature", "ambient register read failed");
@@ -586,8 +580,7 @@ extern "C" void app_main(void) {
   ESP_LOGI(kTag, "");
 
   probe_chip();
-  probe_internal_i2c();
-  probe_sensor_i2c();
+  probe_i2c();
   probe_lcd();
   probe_backlight();
   probe_storage();
