@@ -100,6 +100,13 @@ inline constexpr int kAudioAmpEnable = 1;
 // needs a full power cycle, not a reset. The driver does not hardcode this: it
 // scans 0x18..0x1F and identifies the part by its manufacturer ID, so any strap
 // configuration works and the codec can never be mistaken for the sensor.
+//
+// All three strap pins must be tied to something. Per the datasheet
+// (DS20005095B §3.5 plus the DC spec's ±5 µA leakage and CMOS thresholds) they
+// are high-impedance inputs with no internal pull-down, so an open pin is
+// undefined rather than zero — the address can then move with noise or board
+// leakage, even between power cycles. Some breakouts fit their own pull-downs;
+// not all do.
 inline constexpr uint8_t kSensorI2cAddrDefault = 0x1A;  // A1 strapped high
 inline constexpr uint8_t kSensorI2cAddrFirst   = 0x18;  // scan range, inclusive
 inline constexpr uint8_t kSensorI2cAddrLast    = 0x1F;

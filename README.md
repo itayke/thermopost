@@ -52,6 +52,17 @@ ES8311 codec lives. A1 high moves it to `0x1A`, clear of both `0x18` and `0x19`.
 The straps are latched at power-up, so **a strap change needs a full power cycle,
 not a reset button press.**
 
+**Tie A0 and A2 to GND rather than leaving them open**, unless you have
+confirmed your breakout has pull-down resistors (Adafruit's does; the CJMCU-9908
+is undocumented — measure A0-to-GND, ~10 kΩ means they are fitted). The bare
+chip does not: the datasheet (DS20005095B §3.5) calls them plain "device address
+input pins", and the DC spec lists only a ±5 µA leakage current with CMOS
+thresholds, which is a high-impedance input with nothing holding it. Floating
+them doesn't read as zero — it reads as undefined, and the address can then shift
+with noise, board leakage or flux residue, including *between power cycles*. That
+failure presents as a sensor that intermittently vanishes or moves, which is a
+far worse afternoon than two extra solder joints.
+
 The firmware doesn't hardcode the address: it scans `0x18..0x1F` and identifies
 the part by its manufacturer ID, so any strap combination works and the codec
 can never be mistaken for the sensor. If you leave the straps alone, the probe
