@@ -114,6 +114,14 @@ interval; those are two different cadences and only the second one is a setting.
 If the sensor is missing or the lead is pulled the screen says so in red and the
 sampler keeps rescanning, so reseating the connector recovers without a reboot.
 
+A green dot follows your finger, and the corner label and the serial log both
+show the coordinate. That is how the touch orientation was settled: the flags in
+[`touch.cpp`](components/touch/touch.cpp) can't be derived from the display's,
+because the panel and the touch glass have their own origin corners. Dragging
+showed the horizontal axis correct but the vertical inverted, which is
+`mirror_x` — the mirrors act in the controller's frame, which `swap_xy` then
+transposes, so the flag named X is the one that moves what you see as vertical.
+
 The real UI — graph, thresholds, menu — lands in a later milestone.
 
 ### The hardware bring-up probe
@@ -173,6 +181,7 @@ the code is. Push the IDF dependency into the `alert.cpp` wrapper instead.
 │   ├── board_i2c/          the one shared I²C bus (touch + codec + sensor)
 │   ├── display/            ILI9341 over SPI + LVGL + LEDC backlight
 │   ├── sensor/             MCP9808 driver + 1 Hz sampling task
+│   ├── touch/              FT6336 capacitive touch as an LVGL indev
 │   ├── storage/            LittleFS append-log + rotation with stable absolute indices
 │   ├── settings/           NVS-backed interval / band / units / sound
 │   └── alert/              alarm decision logic (IDF-free, host-tested)
@@ -206,8 +215,9 @@ returns.
 | ✅ Built | Repo skeleton, bring-up probe, `storage`, `settings`, `alert` decision logic, host tests |
 | ✅ Verified | The gate: N16R8 (16 MB flash / 8 MB PSRAM), touch `0x38`, ES8311 `0x18`, MCP9808 `0x1A` reading room temperature |
 | ✅ Verified | `display` — ILI9341 + LVGL drawing correctly at 320×240, backlight under LEDC PWM |
-| ✅ Built | `board_i2c` + `sensor` — MCP9808 found by manufacturer ID, sampled at 1 Hz, shown on screen |
-| ⬜️ Not started | touch, graph UI, alerts, cloud, power |
+| ✅ Verified | `board_i2c` + `sensor` — MCP9808 found by manufacturer ID, sampled at 1 Hz, shown on screen |
+| ✅ Built | `touch` — FT6336 via the FT5x06 driver, registered as an LVGL pointer indev |
+| ⬜️ Not started | graph UI, alerts, cloud, power |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
 power. Each step ends at something flashable and observable. (Sensor jumped

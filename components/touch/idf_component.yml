@@ -1,0 +1,12 @@
+## Managed dependencies for the touch component.
+
+dependencies:
+  ## LVGL 9.x — the indev this component registers. Same pin as display/.
+  lvgl/lvgl: "^9.2.0"
+
+  ## Espressif's FT5x06 driver. The FT6336G is a two-point member of the same
+  ## register family, so the FT5x06 driver reads it — but that is a claim about
+  ## a rebranded module, and the plan's fallback if it does not enumerate is
+  ## cfscn/esp_lcd_touch_ft6x36, or a ~120-line direct driver (FT6x36 register
+  ## access is trivial: one status byte, then two points of 4 bytes each).
+  espressif/esp_lcd_touch_ft5x06: "^1.0.0"

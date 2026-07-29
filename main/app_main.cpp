@@ -24,6 +24,7 @@
 #include "sensor.hpp"
 #include "settings.hpp"
 #include "storage.hpp"
+#include "touch.hpp"
 
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -56,8 +57,19 @@ constexpr uint32_t kReadoutRefreshMs = 250;
 constexpr const char* kReadoutNoValue = "--.-";
 constexpr size_t kReadoutTextMax = 64;
 
+// --- Touch probe (M2) ------------------------------------------------------
+// A dot that follows the finger, which is the whole verification for the touch
+// rotation flags: a dot tracking diagonally proves swap_xy, and one running the
+// wrong way along an axis names exactly which mirror flag to flip. Goes away
+// with the real UI, when actual widgets take over as the proof.
+constexpr int      kTouchDotPx    = 14;
+constexpr uint32_t kTouchDotColor = 0x00FF80;
+constexpr int      kTouchLabelPad = 6;
+
 lv_obj_t* s_value_label = nullptr;
 lv_obj_t* s_status_label = nullptr;
+lv_obj_t* s_touch_dot = nullptr;
+lv_obj_t* s_touch_label = nullptr;
 
 esp_err_t init_nvs() {
   const esp_err_t err = nvs_flash_init();
@@ -122,6 +134,36 @@ void readout_tick(lv_timer_t*) {
   lv_obj_set_style_text_color(s_status_label, lv_color_hex(kReadoutFault), LV_PART_MAIN);
 }
 
+// Screen-level handler: the labels are not clickable, so their events bubble
+// up here and every touch on the panel lands in one place.
+void touch_event_cb(lv_event_t* e) {
+  const lv_event_code_t code = lv_event_get_code(e);
+
+  if (code == LV_EVENT_RELEASED) {
+    lv_obj_add_flag(s_touch_dot, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+
+  lv_indev_t* dev = lv_indev_active();
+  if (dev == nullptr) return;
+
+  lv_point_t p;
+  lv_indev_get_point(dev, &p);
+  lv_obj_set_pos(s_touch_dot, p.x - kTouchDotPx / 2, p.y - kTouchDotPx / 2);
+  lv_obj_remove_flag(s_touch_dot, LV_OBJ_FLAG_HIDDEN);
+
+  char text[kReadoutTextMax];
+  std::snprintf(text, sizeof(text), "touch %d,%d", static_cast<int>(p.x),
+                static_cast<int>(p.y));
+  lv_label_set_text(s_touch_label, text);
+
+  // Also to serial, so the numbers are readable even when the dot lands
+  // somewhere the mapping did not intend.
+  if (code == LV_EVENT_PRESSED) {
+    ESP_LOGI(kTag, "touch %d,%d", static_cast<int>(p.x), static_cast<int>(p.y));
+  }
+}
+
 void build_readout_screen() {
   if (!display::lock()) {
     ESP_LOGE(kTag, "could not take the LVGL lock; skipping the readout screen");
@@ -151,6 +193,26 @@ void build_readout_screen() {
 
   lv_timer_create(readout_tick, kReadoutRefreshMs, nullptr);
 
+  // --- Touch probe. Created last so the dot draws over everything else. ---
+  s_touch_label = lv_label_create(scr);
+  lv_label_set_text(s_touch_label, "touch -,-");
+  lv_obj_set_style_text_color(s_touch_label, lv_color_hex(kReadoutMuted), LV_PART_MAIN);
+  lv_obj_align(s_touch_label, LV_ALIGN_TOP_LEFT, kTouchLabelPad, kTouchLabelPad);
+
+  s_touch_dot = lv_obj_create(scr);
+  lv_obj_set_size(s_touch_dot, kTouchDotPx, kTouchDotPx);
+  lv_obj_set_style_radius(s_touch_dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(s_touch_dot, lv_color_hex(kTouchDotColor), LV_PART_MAIN);
+  lv_obj_set_style_border_width(s_touch_dot, 0, LV_PART_MAIN);
+  // Without this the dot swallows the touches it is supposed to be reporting,
+  // and dragging onto it would look like a release.
+  lv_obj_remove_flag(s_touch_dot, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(s_touch_dot, LV_OBJ_FLAG_HIDDEN);
+
+  lv_obj_add_event_cb(scr, touch_event_cb, LV_EVENT_PRESSED, nullptr);
+  lv_obj_add_event_cb(scr, touch_event_cb, LV_EVENT_PRESSING, nullptr);
+  lv_obj_add_event_cb(scr, touch_event_cb, LV_EVENT_RELEASED, nullptr);
+
   display::unlock();
 }
 
@@ -170,6 +232,7 @@ extern "C" void app_main(void) {
   // Non-fatal by design: a missing sensor still boots to a screen that says so,
   // and the sampler keeps rescanning in case the flying lead is reseated.
   step("sensor", sensor::init());
+  step("touch", touch::init());
 
   build_readout_screen();
   display::set_brightness(kBootBrightnessPct);

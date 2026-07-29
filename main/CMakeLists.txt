@@ -24,6 +24,7 @@ idf_component_register(
         sensor
         storage
         settings
+        touch
         alert
 )
 
