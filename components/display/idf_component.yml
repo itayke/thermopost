@@ -1,0 +1,14 @@
+## Managed dependencies for the display component.
+##
+## Declared here rather than in main/ so the dependency travels with the code
+## that actually uses it — `main` needs neither LVGL nor the panel driver.
+
+dependencies:
+  ## LVGL 9.x. Pinned to the 9.x line so a 10.x release can't arrive silently.
+  lvgl/lvgl: "^9.2.0"
+
+  ## ILI9341 panel driver (4-line SPI). The bring-up probe could not confirm the
+  ## controller — its ID reads need controller-specific dummy clocks — so this is
+  ## the informed guess from the vendor wiki. A wrong guess shows up immediately
+  ## as a blank or scrambled screen, not as a subtle bug.
+  espressif/esp_lcd_ili9341: "^2.0.0"

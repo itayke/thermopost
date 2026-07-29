@@ -7,6 +7,7 @@
 
 #include "esp_littlefs.h"
 #include "esp_log.h"
+#include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
@@ -16,6 +17,7 @@ namespace {
 
 constexpr const char* kTag          = "storage";
 constexpr const char* kPartitionLbl = "storage";  // matches partitions.csv
+constexpr const char* kLittlefsTag  = "esp_littlefs";  // the library's own log tag
 constexpr const char* kBasePath     = "/littlefs";
 constexpr const char* kLogPath      = "/littlefs/temps.bin";
 constexpr const char* kLogTmpPath   = "/littlefs/temps.bin.tmp";
@@ -202,6 +204,24 @@ void recover_rotation() {
   }
 }
 
+// A never-written flash partition reads back as all 0xFF, so a handful of bytes
+// at offset 0 is enough to tell "no filesystem yet" from "filesystem damaged".
+// Reading the superblock region is sufficient — littlefs writes there first.
+constexpr size_t kBlankProbeBytes = 256;
+
+bool partition_is_blank() {
+  const esp_partition_t* part = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, kPartitionLbl);
+  if (part == nullptr) return false;
+
+  uint8_t probe[kBlankProbeBytes];
+  if (esp_partition_read(part, 0, probe, sizeof(probe)) != ESP_OK) return false;
+  for (const uint8_t b : probe) {
+    if (b != 0xFF) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 esp_err_t init() {
@@ -210,16 +230,39 @@ esp_err_t init() {
   s_lock = xSemaphoreCreateMutex();
   if (s_lock == nullptr) return ESP_ERR_NO_MEM;
 
-  const esp_vfs_littlefs_conf_t conf = {
+  esp_vfs_littlefs_conf_t conf = {
       .base_path              = kBasePath,
       .partition_label        = kPartitionLbl,
       .partition              = nullptr,
-      .format_if_mount_failed = true,
+      .format_if_mount_failed = false,  // see below — we format deliberately
       .read_only              = false,
       .dont_mount             = false,
       .grow_on_mount          = false,
   };
-  const esp_err_t err = esp_vfs_littlefs_register(&conf);
+
+  // Mounting a blank partition necessarily fails, and littlefs logs that at
+  // ERROR ("corrupted dir pair") — which on a first boot reads as a fault when
+  // it is the expected outcome. So: check whether the partition has ever been
+  // written, try the mount with littlefs's own logging muted, and say which of
+  // the two cases actually happened. A format that destroys real data is worth
+  // a warning; a format of empty flash is not.
+  const bool blank = partition_is_blank();
+  esp_log_level_set(kLittlefsTag, ESP_LOG_NONE);
+  esp_err_t err = esp_vfs_littlefs_register(&conf);
+  esp_log_level_set(kLittlefsTag, static_cast<esp_log_level_t>(CONFIG_LOG_DEFAULT_LEVEL));
+
+  if (err != ESP_OK) {
+    if (blank) {
+      ESP_LOGI(kTag, "storage partition is blank — formatting (first boot)");
+    } else {
+      ESP_LOGW(kTag,
+               "littlefs mount failed (%s) on a written partition — reformatting; "
+               "stored records are lost",
+               esp_err_to_name(err));
+    }
+    conf.format_if_mount_failed = true;
+    err = esp_vfs_littlefs_register(&conf);
+  }
   if (err != ESP_OK) {
     ESP_LOGE(kTag, "littlefs mount failed: %s", esp_err_to_name(err));
     return err;

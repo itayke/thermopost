@@ -1,0 +1,17 @@
+menu "Thermo Post"
+
+config THERMOPOST_RUN_BRINGUP_PROBE
+    bool "Run the hardware bring-up probe at boot"
+    default n
+    help
+        Runs main/bringup_probe.cpp before the normal boot sequence: identifies
+        the SoC, scans I2C, reads the LCD controller ID, blinks the backlight,
+        and self-tests storage and settings, ending in a GATE PASS / GATE FAIL
+        summary. Turn this on when re-checking the pin map against hardware or
+        after rewiring.
+
+        DESTRUCTIVE: it erases the temperature log and resets settings to
+        defaults so its checks start from a known state. It also parks the boot
+        forever if any check fails, so the app will not come up.
+
+endmenu

@@ -8,8 +8,8 @@ reading to a Google Sheet over Wi-Fi.
 
 By Itay Keren <itay@untame.com>. Copyright (c) 2026 Itay Keren.
 
-> **Early-stage — the firmware is at bring-up and the pin map has not been
-> verified against a physical board yet.** See [Status](#status).
+> **Early-stage.** The pin map is confirmed on hardware, but the UI, sensor
+> sampling, alerts and cloud sync are not built yet. See [Status](#status).
 
 ## Hardware
 
@@ -24,11 +24,15 @@ By Itay Keren <itay@untame.com>. Copyright (c) 2026 Itay Keren.
 | Charging | TP4054, battery sense on GPIO9 | ADC1_CH8 |
 | Storage | microSD (unused in v1) | SDIO |
 
-**⚠️ The pin map in [`main/board_pins.hpp`](main/board_pins.hpp) is transcribed
-from [lcdwiki.com](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display) and has
-never been checked against a physical unit.** Vendor listings say "IPS" where the
-wiki says ILI9341V, and rebranded boards do change controllers between production
-runs. That is what the bring-up probe below exists to settle.
+The pin map in [`main/board_pins.hpp`](main/board_pins.hpp) is transcribed from
+[lcdwiki.com](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display) and **confirmed
+on hardware** — the bring-up probe checked every pin except the panel, and the
+display driver confirmed that by drawing. The controller takes the ILI9341
+command set; it is one of the "IPS" variants, so it needs `INVON` (without it
+the image comes up as a photographic negative).
+
+The Type-C port is the ESP32-S3's native USB-Serial-JTAG, not a bridge chip, so
+it enumerates as `/dev/cu.usbmodem*`.
 
 ### Wiring the MCP9808
 
@@ -98,32 +102,41 @@ are cosmetic and never go away.
 
 ## Usage
 
-The current `app_main` is **a one-shot hardware probe, not the app**. Flash it,
-watch the serial log, and it answers the five questions that everything else
-depends on:
+Flashing brings the board up through `display → nvs → storage → settings` and
+draws a placeholder screen. The real UI lands in a later milestone.
+
+### The hardware bring-up probe
+
+A separate diagnostic answers the questions the drivers depend on. It is off by
+default:
+
+```sh
+idf.py menuconfig       # Thermo Post → Run the hardware bring-up probe at boot
+idf.py flash monitor
+```
+
+(`idf.py -D CONFIG_…` does *not* work — that sets CMake cache variables, not
+Kconfig options, and is silently ignored.)
+
+It reports, in order:
 
 1. Is this really an N16R8 (16 MB flash, 8 MB PSRAM)?
-2. Who is on the internal I²C bus? (expect touch at 0x38, ES8311 at 0x18 or 0x19)
-3. Is the MCP9808 alive on its own bus, reading a plausible room temperature?
+2. Who is on the I²C bus? (expect touch at `0x38`, ES8311 at `0x18`/`0x19`)
+3. Is the MCP9808 alive, reading a plausible room temperature?
 4. What does the LCD controller report as its ID?
 5. Does GPIO45 actually control the backlight? *(watch the screen — it blinks 3×)*
 
-It then self-tests `storage` and `settings`, which need no sensor or panel.
-
-The log ends in a `GATE PASS` / `GATE FAIL` summary. **On a failure, fix
-`board_pins.hpp` or the wiring before starting on the drivers** — writing drivers
-against a wrong pin map is how bring-up turns into a two-day guessing game.
+It then self-tests `storage` and `settings`, and ends in a `GATE PASS` /
+`GATE FAIL` summary. **On a failure it parks the boot** rather than letting the
+drivers fail downstream of a wrong pin map.
 
 Two caveats:
 
 - **The controller-ID read is advisory.** Those reads need controller-specific
-  dummy clocks, so garbage is inconclusive, not a failure. The definitive test is
-  whether the display step puts a correct image on screen.
-- **The probe erases the log and resets settings** to get a known starting state.
-  Harmless now; it must not survive into the real `app_main`.
-
-If the MCP9808 isn't wired yet, everything else still reports — that one check
-just fails.
+  dummy clocks, so garbage is inconclusive, not a failure — and on this board it
+  *is* garbage. The definitive test is whether the display draws a correct image.
+- **The probe is destructive.** It erases the log and resets settings to get a
+  known starting state. That is why it is opt-in.
 
 ## Host tests
 
@@ -143,9 +156,10 @@ the code is. Push the IDF dependency into the `alert.cpp` wrapper instead.
 ```
 .
 ├── partitions.csv          nvs + factory (4 MB) + littlefs (~12 MB)
-├── sdkconfig.defaults      PSRAM, flash, partition table, FreeRTOS tick, console
-├── main/                   bring-up probe + board_pins (becomes the boot sequencer)
+├── sdkconfig.defaults      PSRAM, flash, partition table, FreeRTOS tick, console, LVGL
+├── main/                   boot sequencer, board_pins, opt-in bring-up probe
 ├── components/
+│   ├── display/            ILI9341 over SPI + LVGL + LEDC backlight
 │   ├── storage/            LittleFS append-log + rotation with stable absolute indices
 │   ├── settings/           NVS-backed interval / band / units / sound
 │   └── alert/              alarm decision logic (IDF-free, host-tested)
@@ -172,15 +186,15 @@ returns.
 
 ## Status
 
-**Bring-up. The hardware has not been verified yet.**
+**Bring-up passed. Drivers next.**
 
 | | |
 |---|---|
 | ✅ Built | Repo skeleton, bring-up probe, `storage`, `settings`, `alert` decision logic, host tests |
-| ⛔️ Blocked | The bring-up gate — needs the board plugged in (see [Usage](#usage)) |
-| ⬜️ Not started | display, touch, sensor, UI, alerts, cloud, power |
+| ✅ Verified | The gate: N16R8 (16 MB flash / 8 MB PSRAM), touch `0x38`, ES8311 `0x18`, MCP9808 `0x1A` reading room temperature |
+| ✅ Verified | `display` — ILI9341 + LVGL drawing correctly at 320×240, backlight under LEDC PWM |
+| ⬜️ Not started | touch, sensor, UI, alerts, cloud, power |
 
-Everything built so far is deliberately independent of the unverified pin map.
 Build order from here: display → touch → sensor → main screen → menu → alerts →
 cloud → power. Each step ends at something flashable and observable.
 
@@ -191,9 +205,12 @@ cloud → power. Each step ends at something flashable and observable.
   deciding whether deeper duty-cycling is worth the complexity. The numbers that
   decide it: average current with the screen on, dimmed, backlight off, and
   deep-sleeping between one-minute readings.
-- **Backlight dimming.** The wiki documents GPIO45 as a plain high/low enable. If
-  LEDC PWM doesn't actually dim it, `set_brightness()` collapses to on/off and
-  the power model loses its "dim" tier.
+- **Backlight dimming.** GPIO45 drives the backlight and LEDC PWM lights it, but
+  only 100% has been exercised so far. The wiki documents the pin as a plain
+  high/low enable, so if the circuit gates a fixed-current driver the
+  intermediate duty cycles may not actually dim — in which case
+  `set_brightness()` collapses to on/off and the power model loses its "dim"
+  tier. Settles the first time the idle policy steps it down.
 - **The ES8311 tone.** Driving a codec over I²S to produce a simple alert beep is
   the least certain part of the build. It is kept behind a two-function API so a
   failure degrades to visual-only alerts rather than blocking anything else.

@@ -7,11 +7,16 @@
 //
 // Source: https://www.lcdwiki.com/2.8inch_ESP32-S3_Display
 //
-// ⚠️  UNVERIFIED until the bring-up probe (app_main.cpp) is run on the actual
-// unit. Vendor listings say "IPS" where the wiki says ILI9341V, and rebranded
-// boards do quietly change controllers between production runs. If a pin behaves
-// unexpectedly, re-run the probe before assuming a code bug — that is exactly
-// what it is for.
+// VERIFIED on hardware by the bring-up probe (22/22): N16R8 confirmed (16 MB
+// flash, 8 MB octal PSRAM), I2C0 answers at 0x18 / 0x1A / 0x38, and the MCP9808
+// reads a plausible room temperature.
+//
+// The probe could not settle the LCD controller — both ID reads came back
+// degenerate (0xD3 -> FF FF FF FF, 0x04 -> 00 00 00 00), because those reads
+// need controller-specific dummy clocks that esp_lcd's generic parameter read
+// does not issue. The display driver settled it instead: the ILI9341 command
+// set drives this panel correctly, so the wiki is right. It is one of the "IPS"
+// variants and needs INVON (see kInvertColor in display.cpp).
 
 namespace thermopost::board {
 
@@ -60,9 +65,9 @@ inline constexpr int kTouchReset = 18;
 inline constexpr uint8_t kTouchI2cAddr = 0x38;  // FT6x36 family default
 
 // --- ES8311 audio codec (control port) ---
-// Address is 0x18 with CE strapped low, 0x19 with it high. The probe reports
-// which — and note it collides with the MCP9808's default 0x18, which is the
-// reason the sensor gets its own bus below rather than sharing this one.
+// Address is 0x18 with CE strapped low, 0x19 with it high. This board straps it
+// low, so the codec sits at 0x18 — the MCP9808's default address, which is why
+// the sensor's A1 pin is strapped high (see below).
 inline constexpr uint8_t kEs8311I2cAddrLow  = 0x18;
 inline constexpr uint8_t kEs8311I2cAddrHigh = 0x19;
 
