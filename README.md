@@ -392,6 +392,10 @@ state machine and M9's RTC-memory mirror an obvious place to attach.
 - **The ES8311 tone.** Driving a codec over I²S to produce a simple alert beep is
   the least certain part of the build. It is kept behind a two-function API so a
   failure degrades to visual-only alerts rather than blocking anything else.
-- **Default alarm band.** Currently 15–30 °C — deliberately generic, enough to
-  make a fresh device sane and the alarm path exercisable. Expected to be the
-  first thing a user changes.
+- **Default alarm band.** Currently **20–25 °C**, deliberately tight around room
+  temperature so both directions are reachable on a desk — cup the sensor to breach
+  the maximum, a cold drink or canned air to breach the minimum. That makes the
+  alarm path, the record flags and the graph's envelope testable in seconds instead
+  of needing a tank. It follows that a device sitting on a desk will alarm, which is
+  the intent of these numbers rather than a bug; 15–30 °C is the sane generic band
+  to go back to once the alarms are proven.

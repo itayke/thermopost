@@ -40,12 +40,17 @@ constexpr uint16_t kGraphPointsMin = 30;
 constexpr uint16_t kGraphPointsMax = 480;
 constexpr uint16_t kGraphPointsDefault = 120;
 
-// Deliberately a plain room-temperature band rather than something tuned to a
-// specific use. It exists so a fresh device does something sensible on first
-// boot and so the alarm path is exercisable out of the box — it is expected to
-// be the first thing the user changes.
-constexpr int16_t kMinDefaultC100 = 1500;  // 15.00 °C
-constexpr int16_t kMaxDefaultC100 = 3000;  // 30.00 °C
+// A deliberately tight band straddling room temperature, so both directions are
+// reachable on a desk: cup the sensor in a hand to breach the maximum, and a cold
+// drink or a puff of canned air breaches the minimum. That makes the alarm path,
+// the record flags and the graph's envelope all testable in seconds rather than
+// needing a tank.
+//
+// It follows that a device left on a normal desk will alarm — that is the point of
+// these numbers, not an oversight. Expected to be the first thing changed for real
+// use, and a wider 15..30 is the sane generic band to go back to.
+constexpr int16_t kMinDefaultC100 = 2000;  // 20.00 °C
+constexpr int16_t kMaxDefaultC100 = 2500;  // 25.00 °C
 constexpr int16_t kHysteresisDefaultC100 = 50;  // 0.50 °C
 
 constexpr uint8_t kVolumeDefaultPct = 70;
