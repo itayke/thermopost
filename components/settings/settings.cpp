@@ -1,8 +1,11 @@
 #include "settings.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
 
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "nvs.h"
 
 namespace thermopost::settings {
@@ -20,9 +23,20 @@ constexpr const char* kKeyPoints   = "gp";
 constexpr const char* kKeyUnit     = "un";
 constexpr const char* kKeySound    = "sn";
 constexpr const char* kKeyVolume   = "vo";
+constexpr const char* kKeyName     = "nm";
+
+// Printable-ASCII bounds for the name. Space is allowed inside it, just not at
+// either end.
+constexpr unsigned char kAsciiFirst = 0x20;
+constexpr unsigned char kAsciiLast  = 0x7E;
 
 bool s_inited = false;
 
+// The name initialiser is a literal rather than the MAC-derived default because
+// that needs a runtime read; init() replaces it. Seeding it here instead of
+// leaving it empty means the field is valid even for a caller that reads settings
+// before the boot sequencer runs init(), so nothing downstream has to handle an
+// unnamed post — and if esp_read_mac ever fails, this is what stands.
 Settings s_cur = {
     .interval_s      = kIntervalDefaultS,
     .min_c100        = kMinDefaultC100,
@@ -32,6 +46,7 @@ Settings s_cur = {
     .unit            = TempUnit::Fahrenheit,
     .sound_enabled   = true,
     .volume_pct      = kVolumeDefaultPct,
+    .name            = "Post-0000",
 };
 
 // --- NVS plumbing ----------------------------------------------------------
@@ -58,6 +73,49 @@ bool persist_i16(const char* key, int16_t v) {
   return persist<uint16_t>(key, static_cast<uint16_t>(v));
 }
 
+bool persist_str(const char* key, const char* value) {
+  nvs_handle_t h;
+  if (nvs_open(kNvsNamespace, NVS_READWRITE, &h) != ESP_OK) return false;
+  const bool ok = nvs_set_str(h, key, value) == ESP_OK && nvs_commit(h) == ESP_OK;
+  nvs_close(h);
+  if (!ok) ESP_LOGW(kTag, "failed to persist '%s'", key);
+  return ok;
+}
+
+// --- the post name ---------------------------------------------------------
+
+// Replace the seeded fallback with Post-XXXX from the low two bytes of the MAC.
+// On failure the seed stands rather than leaving the post nameless.
+void apply_default_name() {
+  uint8_t mac[6] = {};
+  if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+    ESP_LOGW(kTag, "esp_read_mac failed; keeping the fallback name '%s'", s_cur.name);
+    return;
+  }
+  std::snprintf(s_cur.name, sizeof(s_cur.name), "%s%02X%02X", kNamePrefix, mac[4], mac[5]);
+}
+
+// Copy `src` into `out`, keeping only printable ASCII, trimming spaces at both
+// ends, and truncating to kNameMaxLen. Returns false if nothing usable survived.
+//
+// Sanitizing rather than rejecting is deliberate: this is the chokepoint both the
+// web form and NVS load go through, and a form value is not to be trusted to have
+// honoured its own maxlength. Dropping every byte >= 0x7F takes UTF-8 continuation
+// bytes with the lead byte, so "café" becomes "caf" rather than a mojibake tail.
+bool sanitize_name(const char* src, char* out, size_t out_size) {
+  if (src == nullptr || out_size == 0) return false;
+  size_t n = 0;
+  for (const char* p = src; *p != '\0' && n + 1 < out_size; ++p) {
+    const unsigned char c = static_cast<unsigned char>(*p);
+    if (c < kAsciiFirst || c > kAsciiLast) continue;
+    if (c == ' ' && n == 0) continue;  // no leading space
+    out[n++] = static_cast<char>(c);
+  }
+  while (n > 0 && out[n - 1] == ' ') --n;  // no trailing space
+  out[n] = '\0';
+  return n > 0;
+}
+
 // --- clamping --------------------------------------------------------------
 // Applied on both load and set, so a value written by an older firmware (or a
 // hand-edited NVS partition) can never reach the sample task or the UI.
@@ -79,6 +137,10 @@ int16_t clamp_hysteresis(int16_t v) {
 
 esp_err_t init() {
   if (s_inited) return ESP_ERR_INVALID_STATE;
+
+  // Before the NVS read, so an unnamed post gets its MAC-derived name on every
+  // boot without that default ever being written to flash.
+  apply_default_name();
 
   nvs_handle_t h;
   const esp_err_t open_err = nvs_open(kNvsNamespace, NVS_READONLY, &h);
@@ -107,11 +169,25 @@ esp_err_t init() {
   if (nvs_get_u8(h, kKeyUnit, &u8) == ESP_OK && u8 <= 1) s_cur.unit = static_cast<TempUnit>(u8);
   if (nvs_get_u8(h, kKeySound, &u8) == ESP_OK) s_cur.sound_enabled = (u8 != 0);
   if (nvs_get_u8(h, kKeyVolume, &u8) == ESP_OK) s_cur.volume_pct = clamp_volume(u8);
+
+  // Sanitized on the way out of NVS as well as in, so a value written by hand or
+  // by a firmware with a wider limit can't reach the UI. A stored name longer
+  // than the buffer makes nvs_get_str return ESP_ERR_NVS_INVALID_LENGTH without
+  // touching name_buf, which leaves the default standing — the right outcome.
+  char name_buf[kNameMaxLen + 1] = {};
+  size_t name_len = sizeof(name_buf);
+  if (nvs_get_str(h, kKeyName, name_buf, &name_len) == ESP_OK) {
+    char clean[kNameMaxLen + 1];
+    if (sanitize_name(name_buf, clean, sizeof(clean))) {
+      std::snprintf(s_cur.name, sizeof(s_cur.name), "%s", clean);
+    }
+  }
   nvs_close(h);
 
   s_inited = true;
-  ESP_LOGI(kTag, "interval %us, band %.2f..%.2f C (hyst %.2f), %u graph points, "
+  ESP_LOGI(kTag, "'%s': interval %us, band %.2f..%.2f C (hyst %.2f), %u graph points, "
                  "%s, sound %s @ %u%%",
+           s_cur.name,
            static_cast<unsigned>(s_cur.interval_s),
            static_cast<double>(c100_to_c(s_cur.min_c100)),
            static_cast<double>(c100_to_c(s_cur.max_c100)),
@@ -180,11 +256,33 @@ esp_err_t set_volume_pct(uint8_t pct) {
   return persist<uint8_t>(kKeyVolume, pct) ? ESP_OK : ESP_FAIL;
 }
 
+esp_err_t set_name(const char* s) {
+  char clean[kNameMaxLen + 1];
+  if (!sanitize_name(s, clean, sizeof(clean))) {
+    // A blank submission means "go back to the default", which is more useful
+    // than an error the form would have to render.
+    apply_default_name();
+  } else {
+    if (std::strcmp(clean, s_cur.name) == 0) return ESP_OK;
+    std::snprintf(s_cur.name, sizeof(s_cur.name), "%s", clean);
+  }
+  ESP_LOGI(kTag, "name set to '%s'", s_cur.name);
+  return persist_str(kKeyName, s_cur.name) ? ESP_OK : ESP_FAIL;
+}
+
 alert::Thresholds thresholds() {
   return alert::sanitize({s_cur.min_c100, s_cur.max_c100, s_cur.hysteresis_c100});
 }
 
 esp_err_t reset_to_defaults() {
+  // The name deliberately survives a reset. It is the post's identity, not a
+  // tunable: a device that forgets which tank it is watching because someone
+  // reset the alarm band is surprising, and recovering the name costs a trip to
+  // the web form. nvs_erase_all takes the key with everything else, so it is
+  // written back afterwards.
+  char keep_name[kNameMaxLen + 1];
+  std::snprintf(keep_name, sizeof(keep_name), "%s", s_cur.name);
+
   nvs_handle_t h;
   if (nvs_open(kNvsNamespace, NVS_READWRITE, &h) == ESP_OK) {
     nvs_erase_all(h);
@@ -200,8 +298,12 @@ esp_err_t reset_to_defaults() {
       .unit            = TempUnit::Fahrenheit,
       .sound_enabled   = true,
       .volume_pct      = kVolumeDefaultPct,
+      .name            = {},
   };
-  ESP_LOGW(kTag, "settings reset to defaults");
+  std::snprintf(s_cur.name, sizeof(s_cur.name), "%s", keep_name);
+  persist_str(kKeyName, s_cur.name);
+
+  ESP_LOGW(kTag, "settings reset to defaults (name '%s' kept)", s_cur.name);
   return ESP_OK;
 }
 

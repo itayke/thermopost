@@ -12,24 +12,27 @@
 //
 // Boot order, each step logging and continuing where it can:
 //
-//   display → nvs → storage → settings → i2c → sensor → (alert → cloud → power → ui)
+//   display → nvs → storage → settings → i2c → sensor → touch → recorder → ui
+//                                                            → (alert → cloud → power)
 //
 // Display comes first so a failure downstream still has somewhere to be shown.
-// The bracketed steps land with their milestones.
+// `recorder` precedes `ui` because the graph is drawn from the ring that
+// recorder::init() backfills — the other way round would paint an empty chart and
+// then fill it a frame later. The bracketed steps land with their milestones.
 
 #include "board_i2c.hpp"
 #include "bringup_probe.hpp"
 
 #include "display.hpp"
+#include "recorder.hpp"
 #include "sensor.hpp"
 #include "settings.hpp"
 #include "storage.hpp"
 #include "touch.hpp"
+#include "ui.hpp"
 
 #include "esp_log.h"
 #include "nvs_flash.h"
-
-#include <cstdio>
 
 namespace {
 
@@ -39,37 +42,6 @@ constexpr const char* kTag = "app";
 
 // Backlight level the UI comes up at, until the power policy owns it.
 constexpr uint8_t kBootBrightnessPct = 100;
-
-// --- Readout screen --------------------------------------------------------
-// A deliberately plain stand-in for the real UI (M5). Its job is to let the
-// sensor be checked against a reference thermometer, so it shows the raw °C
-// alongside the value in the user's chosen unit, plus a live sample counter —
-// a frozen number is otherwise indistinguishable from a very stable room.
-constexpr int      kReadoutValueDy   = -24;  // big number sits above centre
-constexpr int      kReadoutStatusDy  = -8;   // status line above the bottom edge
-constexpr int      kReadoutBorderPx  = 2;
-constexpr uint32_t kReadoutAccent    = 0x00A0FF;
-constexpr uint32_t kReadoutMuted     = 0x808080;
-constexpr uint32_t kReadoutFault     = 0xFF5040;
-// Poll faster than the sensor samples, so the display is never more than a
-// fraction of a period behind the value it is showing.
-constexpr uint32_t kReadoutRefreshMs = 250;
-constexpr const char* kReadoutNoValue = "--.-";
-constexpr size_t kReadoutTextMax = 64;
-
-// --- Touch probe (M2) ------------------------------------------------------
-// A dot that follows the finger, which is the whole verification for the touch
-// rotation flags: a dot tracking diagonally proves swap_xy, and one running the
-// wrong way along an axis names exactly which mirror flag to flip. Goes away
-// with the real UI, when actual widgets take over as the proof.
-constexpr int      kTouchDotPx    = 14;
-constexpr uint32_t kTouchDotColor = 0x00FF80;
-constexpr int      kTouchLabelPad = 6;
-
-lv_obj_t* s_value_label = nullptr;
-lv_obj_t* s_status_label = nullptr;
-lv_obj_t* s_touch_dot = nullptr;
-lv_obj_t* s_touch_label = nullptr;
 
 esp_err_t init_nvs() {
   const esp_err_t err = nvs_flash_init();
@@ -96,126 +68,6 @@ void step(const char* name, esp_err_t err) {
   }
 }
 
-// Runs in the LVGL task, which already holds the LVGL lock.
-//
-// Formatting goes through the C library's snprintf, NOT lv_label_set_text_fmt.
-// LVGL's built-in printf compiles out `case 'f'` unless LV_USE_FLOAT is on, and
-// the unsupported conversion then falls through *without* consuming its double
-// from the varargs — so every later argument is read from the wrong offset. A
-// trailing %s picks up half a mantissa as a char* and the LVGL task dies in
-// lv_strnlen. Silent, and it only fires on the format strings that carry a
-// float, which is why it survived the first flash of the display milestone.
-void readout_tick(lv_timer_t*) {
-  const sensor::Reading r = sensor::latest();
-  char text[kReadoutTextMax];
-
-  if (r.valid) {
-    std::snprintf(text, sizeof(text), "%.1f%s",
-                  static_cast<double>(settings::display_value(r.temp_c100)),
-                  settings::unit_suffix());
-    lv_label_set_text(s_value_label, text);
-    lv_obj_set_style_text_color(s_value_label, lv_color_white(), LV_PART_MAIN);
-
-    // The separator is • (U+2022). The built-in Montserrat fonts carry ASCII
-    // plus exactly two extras, ° and • — anything else renders as a blank.
-    std::snprintf(text, sizeof(text), "%.2f °C  •  MCP9808 @ 0x%02X  •  #%lu",
-                  static_cast<double>(r.temp_c100) / 100.0, sensor::address(),
-                  static_cast<unsigned long>(r.samples));
-    lv_label_set_text(s_status_label, text);
-    lv_obj_set_style_text_color(s_status_label, lv_color_hex(kReadoutMuted), LV_PART_MAIN);
-    return;
-  }
-
-  lv_label_set_text(s_value_label, kReadoutNoValue);
-  lv_obj_set_style_text_color(s_value_label, lv_color_hex(kReadoutFault), LV_PART_MAIN);
-  lv_label_set_text(s_status_label, sensor::address() == 0
-                                        ? "no sensor - check the I2C lead"
-                                        : "sensor fault - rescanning");
-  lv_obj_set_style_text_color(s_status_label, lv_color_hex(kReadoutFault), LV_PART_MAIN);
-}
-
-// Screen-level handler: the labels are not clickable, so their events bubble
-// up here and every touch on the panel lands in one place.
-void touch_event_cb(lv_event_t* e) {
-  const lv_event_code_t code = lv_event_get_code(e);
-
-  if (code == LV_EVENT_RELEASED) {
-    lv_obj_add_flag(s_touch_dot, LV_OBJ_FLAG_HIDDEN);
-    return;
-  }
-
-  lv_indev_t* dev = lv_indev_active();
-  if (dev == nullptr) return;
-
-  lv_point_t p;
-  lv_indev_get_point(dev, &p);
-  lv_obj_set_pos(s_touch_dot, p.x - kTouchDotPx / 2, p.y - kTouchDotPx / 2);
-  lv_obj_remove_flag(s_touch_dot, LV_OBJ_FLAG_HIDDEN);
-
-  char text[kReadoutTextMax];
-  std::snprintf(text, sizeof(text), "touch %d,%d", static_cast<int>(p.x),
-                static_cast<int>(p.y));
-  lv_label_set_text(s_touch_label, text);
-
-  // Also to serial, so the numbers are readable even when the dot lands
-  // somewhere the mapping did not intend.
-  if (code == LV_EVENT_PRESSED) {
-    ESP_LOGI(kTag, "touch %d,%d", static_cast<int>(p.x), static_cast<int>(p.y));
-  }
-}
-
-void build_readout_screen() {
-  if (!display::lock()) {
-    ESP_LOGE(kTag, "could not take the LVGL lock; skipping the readout screen");
-    return;
-  }
-
-  lv_obj_t* scr = lv_screen_active();
-  lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
-
-  // A frame around the full extent of the screen. Kept from the hello screen
-  // because it is still the cheapest orientation check there is: if a rotation
-  // flag or a panel offset is wrong, an edge is clipped or shifted, which is
-  // obvious — whereas centred text would still look fine.
-  lv_obj_set_style_border_color(scr, lv_color_hex(kReadoutAccent), LV_PART_MAIN);
-  lv_obj_set_style_border_width(scr, kReadoutBorderPx, LV_PART_MAIN);
-
-  s_value_label = lv_label_create(scr);
-  lv_label_set_text(s_value_label, kReadoutNoValue);
-  lv_obj_set_style_text_color(s_value_label, lv_color_white(), LV_PART_MAIN);
-  lv_obj_set_style_text_font(s_value_label, &lv_font_montserrat_48, LV_PART_MAIN);
-  lv_obj_align(s_value_label, LV_ALIGN_CENTER, 0, kReadoutValueDy);
-
-  s_status_label = lv_label_create(scr);
-  lv_label_set_text(s_status_label, "starting...");
-  lv_obj_set_style_text_color(s_status_label, lv_color_hex(kReadoutMuted), LV_PART_MAIN);
-  lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, kReadoutStatusDy);
-
-  lv_timer_create(readout_tick, kReadoutRefreshMs, nullptr);
-
-  // --- Touch probe. Created last so the dot draws over everything else. ---
-  s_touch_label = lv_label_create(scr);
-  lv_label_set_text(s_touch_label, "touch -,-");
-  lv_obj_set_style_text_color(s_touch_label, lv_color_hex(kReadoutMuted), LV_PART_MAIN);
-  lv_obj_align(s_touch_label, LV_ALIGN_TOP_LEFT, kTouchLabelPad, kTouchLabelPad);
-
-  s_touch_dot = lv_obj_create(scr);
-  lv_obj_set_size(s_touch_dot, kTouchDotPx, kTouchDotPx);
-  lv_obj_set_style_radius(s_touch_dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(s_touch_dot, lv_color_hex(kTouchDotColor), LV_PART_MAIN);
-  lv_obj_set_style_border_width(s_touch_dot, 0, LV_PART_MAIN);
-  // Without this the dot swallows the touches it is supposed to be reporting,
-  // and dragging onto it would look like a release.
-  lv_obj_remove_flag(s_touch_dot, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_flag(s_touch_dot, LV_OBJ_FLAG_HIDDEN);
-
-  lv_obj_add_event_cb(scr, touch_event_cb, LV_EVENT_PRESSED, nullptr);
-  lv_obj_add_event_cb(scr, touch_event_cb, LV_EVENT_PRESSING, nullptr);
-  lv_obj_add_event_cb(scr, touch_event_cb, LV_EVENT_RELEASED, nullptr);
-
-  display::unlock();
-}
-
 }  // namespace
 
 extern "C" void app_main(void) {
@@ -233,8 +85,11 @@ extern "C" void app_main(void) {
   // and the sampler keeps rescanning in case the flying lead is reseated.
   step("sensor", sensor::init());
   step("touch", touch::init());
+  step("recorder", recorder::init());
+  step("ui", ui::init());
 
-  build_readout_screen();
+  // Last, so the panel lights only once there is a finished screen behind it —
+  // otherwise the boot shows a frame of whatever the framebuffer happened to hold.
   display::set_brightness(kBootBrightnessPct);
 
   ESP_LOGI(kTag, "boot complete");

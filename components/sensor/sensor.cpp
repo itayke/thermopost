@@ -230,8 +230,10 @@ void sample_task(void*) {
       r.uptime_us = esp_timer_get_time();
       r.misses = 0;
       ++r.samples;
-      ESP_LOGI(kTag, "%.2f C / %.2f F", static_cast<double>(r.temp_c100) / 100.0,
-               static_cast<double>(r.temp_c100) * 0.018 + 32.0);
+      // Deliberately silent on a good read. This logged every sample during
+      // bring-up, which was the point then; now the screen shows the value live
+      // and `recorder` logs one line per stored record, so a line a second only
+      // buries anything else on the console. Failures below still speak up.
     } else if (++r.misses >= kFaultAfterMisses) {
       // Give up on this handle and go back to scanning — a reseated connector
       // then recovers without a reboot.

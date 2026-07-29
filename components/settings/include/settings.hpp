@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "alert_logic.hpp"
@@ -49,6 +50,24 @@ constexpr int16_t kHysteresisDefaultC100 = 50;  // 0.50 °C
 
 constexpr uint8_t kVolumeDefaultPct = 70;
 
+// --- Post name -------------------------------------------------------------
+// Thermo Posts are deployed in groups, one per tank, and every upload is tagged
+// with the post's name — a row in a shared Sheet is meaningless without knowing
+// which tank produced it.
+//
+// 24 characters of printable ASCII. The length is the status strip's share of a
+// 320 px line; the ASCII restriction is not stylistic. LVGL's built-in Montserrat
+// carries 0x20-0x7F, ° and • and a fixed FontAwesome subset — an accented letter
+// or an emoji renders as a blank box on the very screen the name exists to label.
+// The name also has to survive slugification into an mDNS hostname later, which
+// can't carry one either.
+constexpr size_t kNameMaxLen = 24;
+
+// An unnamed post falls back to Post-XXXX from the low bytes of its MAC: unique
+// across a group with no user action, and it answers "which of these five
+// identical boxes am I configuring right now" during provisioning.
+constexpr const char* kNamePrefix = "Post-";
+
 struct Settings {
   uint16_t interval_s;       // seconds between samples
   int16_t  min_c100;         // alarm below this
@@ -58,6 +77,7 @@ struct Settings {
   TempUnit unit;             // display only — never affects stored values
   bool     sound_enabled;    // master mute for the alarm tone
   uint8_t  volume_pct;       // 0..100
+  char     name[kNameMaxLen + 1];  // never empty; see kNameMaxLen
 };
 
 // Load from NVS, applying defaults for absent keys and clamping anything out of
@@ -82,12 +102,25 @@ esp_err_t set_unit(TempUnit u);
 esp_err_t set_sound_enabled(bool on);
 esp_err_t set_volume_pct(uint8_t pct);
 
+// Set the post name. Sanitizes rather than rejects — non-ASCII bytes dropped,
+// surrounding spaces trimmed, truncated to kNameMaxLen — because a value arriving
+// from a web form cannot be trusted to have honoured its own maxlength. An empty
+// result restores the MAC-derived default, which is the useful reading of a blank
+// submission.
+//
+// Deliberately NOT reachable from the device menu. It is the only free-text
+// setting, and an on-screen keyboard on a 2.8" panel is the worst possible way to
+// enter one; the web config form owns it. Every other setting is a number or a
+// toggle and is editable from both.
+esp_err_t set_name(const char* s);
+
 // The alarm band in the form alert::step() wants. Already passed through
 // alert::sanitize(), so callers get a set the state machine can always leave.
 alert::Thresholds thresholds();
 
 // Restore every setting to its default and persist. Backs a "reset settings"
-// menu action and the `settings reset` serial command.
+// menu action and the `settings reset` serial command. The post name is the one
+// exception and survives — it is identity, not a tunable.
 esp_err_t reset_to_defaults();
 
 // --- Display helpers. The only place the unit setting is allowed to matter. ---

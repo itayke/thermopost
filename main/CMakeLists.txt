@@ -21,10 +21,12 @@ idf_component_register(
         nvs_flash
         board_i2c
         display
+        recorder
         sensor
         storage
         settings
         touch
+        ui
         alert
 )
 

@@ -8,8 +8,9 @@ reading to a Google Sheet over Wi-Fi.
 
 By Itay Keren <itay@untame.com>. Copyright (c) 2026 Itay Keren.
 
-> **Early-stage.** The pin map is confirmed on hardware, but the UI, sensor
-> sampling, alerts and cloud sync are not built yet. See [Status](#status).
+> **Early-stage.** The pin map, display and sensor are confirmed on hardware and
+> the main screen is up. The menu, alerts and cloud sync are not built yet. See
+> [Status](#status).
 
 ## Hardware
 
@@ -102,27 +103,126 @@ are cosmetic and never go away.
 
 ## Usage
 
-Flashing brings the board up through `display → nvs → storage → settings → i2c
-→ sensor` and draws a readout screen: the temperature in the configured unit
-(°F by default) in large type, and under it the same reading in raw °C, the
-address the MCP9808 was found at, and a sample counter. The counter is there on
-purpose — a number that stops moving is otherwise indistinguishable from a very
-stable room. The same value is logged to serial once a second.
+Flashing brings the board up through `display → nvs → storage → settings → i2c →
+sensor → touch → recorder → ui` and draws the main screen:
 
-The sensor is sampled every second regardless of the configured *logging*
-interval; those are two different cadences and only the second one is a setting.
-If the sensor is missing or the lead is pulled the screen says so in red and the
-sampler keeps rescanning, so reseating the connector recovers without a reboot.
+```
+ (☰ Menu)      72.4°F            ↑ 86.0
+ 14:32                           ↓ 59.0
+ ┌────────────────────────────────────┐
+ │- - - - - - - - - - - - - - - - - - │   max, dashed
+ │        ╭─╮      ╭──╮               │
+ │   ╱  ╱   ╲____╱    ╲___╱╲___       │
+ │- - - - - - - - - - - - - - - - - - │   min, dashed
+ └────────────────────────────────────┘
+  -2h            -1h             now
+ North Tank
+ #recs live 37  total 4213  uploaded --
+```
 
-A green dot follows your finger, and the corner label and the serial log both
-show the coordinate. That is how the touch orientation was settled: the flags in
-[`touch.cpp`](components/touch/touch.cpp) can't be derived from the display's,
-because the panel and the touch glass have their own origin corners. Dragging
-showed the horizontal axis correct but the vertical inverted, which is
-`mirror_x` — the mirrors act in the controller's frame, which `swap_xy` then
-transposes, so the flag named X is the one that moves what you see as vertical.
+The big number is the current reading in the configured unit (°F by default) and
+it changes colour with the band — white inside it, warm above the maximum, cold
+below the minimum, amber when the sensor isn't answering. The colour says which
+way the temperature went before the digits are legible, which is what a screen
+read across a room actually conveys.
 
-The real UI — graph, thresholds, menu — lands in a later milestone.
+**Tapping the reading swaps °C and °F**, thresholds included, and the choice is
+saved. Nothing stored changes: every value on the device is hundredths of a degree
+Celsius and `settings::display_value()` is the only thing that converts, so the
+unit is a property of the screen and never of the log or the Sheet.
+
+The two threshold chips put their arrows at a fixed offset from the right edge and
+centre the numbers beside them. Formatting arrow and number into one right-aligned
+label is the obvious way to do it and it looks wrong: the arrow slides sideways as
+the number's width changes, so the two chips visibly fail to line up with each
+other.
+
+The graph plots one point per logged record, newest at the right, with the
+thresholds as dashed lines. Its y range always covers both the data and the
+band, so the limits stay visible even when the reading is nowhere near them. The
+left-hand caption is the window the plot spans — `graph_points × interval`, so
+120 points at a minute each is `-2h`. Until the ring fills, the left of the plot
+is empty rather than stretched: a short history shouldn't imply a window that
+hasn't elapsed yet.
+
+The clock sits under the menu glyph and reads `no clock` until SNTP lands —
+showing a 1970 timestamp would be a bug report rather than a fact. The phrase is
+short because at Montserrat 14 the accurate one, "clock not set", is wide enough
+to reach under the centred readout; the menu will have room to say it properly.
+
+The status strip has two rows: the post's name, and three record counters that
+answer three different questions.
+
+| | |
+|---|---|
+| `live` | appended since boot — **frozen means logging has stopped** |
+| `total` | ever written, across every boot and rotation |
+| `uploaded` | how far the Sheet has caught up (`--` until M8) |
+
+`live` counts completed writes, not attempts. That distinction is the whole point:
+a counter that keeps climbing while the filesystem is full would defeat the only
+job it has, which is to tell a stopped logger apart from a very stable room when
+the temperature itself isn't moving. If sampling is what you want to watch rather
+than logging, the graph still gains a point on a failed append — the ring is
+updated before the write, so a broken filesystem costs the log and not the picture.
+
+`total` is the absolute index `storage` assigns, so it is directly comparable to
+cloud sync's high-water mark and to the `#n` in the serial log. It is *not* the
+number of records on disk, which is smaller once rotation has dropped a block.
+
+Two cadences, deliberately not one: the sensor is sampled every second so the
+readout is always fresh, while a record is written on the configured *interval*
+(a minute by default) so flash lasts and the Sheet stays readable. Only the
+second is a setting. If the sensor is missing or the lead is pulled, the readout
+says so and the sampler keeps rescanning, so reseating the connector recovers
+without a reboot.
+
+The menu pill is espressopost's, scaled for a 320 px screen: an amber outlined
+capsule holding a hamburger glyph and the word *Menu* in a centred flex row.
+Outline, label and glyph all tint green under a finger, and the tap is logged, but
+it has nowhere to go until M6. The glyph is painted as three rounded bars rather
+than set as `LV_SYMBOL_BARS`, which the built-in font does carry — espressopost's
+reasoning applies here too: a painted glyph tints and scales with the layout
+instead of being pinned to whatever the font designer chose.
+
+Because the pill holds a word as well as a glyph, the readout is centred in the
+gap *between* the side columns rather than on the screen. That is nine pixels off
+true centre, which is invisible, and it means even the widest value the MCP9808 can
+report can't reach under the pill or the chips.
+
+That tap, and the unit toggle, are also the standing check on the touch
+orientation: the flags in [`touch.cpp`](components/touch/touch.cpp) can't be
+derived from the display's, because the panel and the touch glass have their own
+origin corners. Dragging settled them — the horizontal axis was already correct
+and the vertical inverted, which is `mirror_x`, because the mirrors act in the
+controller's frame that `swap_xy` then transposes. The two targets now sit in
+opposite corners, which is a stricter check than one dot ever was.
+
+### The post's name
+
+Thermo Posts are meant to run in a group, one per tank, so each carries a name
+that is sent with every reading — a row in a shared Sheet is meaningless without
+knowing which tank produced it. Until one is set the post calls itself
+`Post-XXXX` after the low bytes of its MAC, which is unique across a group with
+no user action and answers "which of these five identical boxes am I configuring".
+
+The name is the one setting the device menu will *not* change. It is the only
+free-text field, and an on-screen keyboard on a 2.8" panel is the worst possible
+way to enter one, so it belongs to the web config form (M8) — which is being
+filled in from a phone or laptop with a real keyboard anyway. Everything else is
+a number or a toggle and will be editable from both.
+
+24 characters, printable ASCII. The length is the status strip's share of a
+320 px line; the ASCII restriction is not stylistic — LVGL's built-in Montserrat
+covers `0x20-0x7F`, `°`, `•` and a fixed FontAwesome subset, so an accented
+letter or an emoji renders as a blank box on the very screen the name exists to
+label. It also has to survive slugification into an mDNS hostname later. Both
+limits are enforced in `settings::set_name()` rather than at the form, because a
+submitted value can't be trusted to have honoured its own `maxlength`.
+
+A settings reset keeps the name. It is the post's identity, not a tunable — a
+device that forgets which tank it watches because someone reset the alarm band
+would be a surprise.
 
 ### The hardware bring-up probe
 
@@ -182,8 +282,10 @@ the code is. Push the IDF dependency into the `alert.cpp` wrapper instead.
 │   ├── display/            ILI9341 over SPI + LVGL + LEDC backlight
 │   ├── sensor/             MCP9808 driver + 1 Hz sampling task
 │   ├── touch/              FT6336 capacitive touch as an LVGL indev
+│   ├── recorder/           the one log writer + the graph's RAM ring
+│   ├── ui/                 theme + the main screen
 │   ├── storage/            LittleFS append-log + rotation with stable absolute indices
-│   ├── settings/           NVS-backed interval / band / units / sound
+│   ├── settings/           NVS-backed name / interval / band / units / sound
 │   └── alert/              alarm decision logic (IDF-free, host-tested)
 └── tests/host/             Catch2 unit tests, no IDF
 ```
@@ -217,12 +319,19 @@ returns.
 | ✅ Verified | `display` — ILI9341 + LVGL drawing correctly at 320×240, backlight under LEDC PWM |
 | ✅ Verified | `board_i2c` + `sensor` — MCP9808 found by manufacturer ID, sampled at 1 Hz, shown on screen |
 | ✅ Built | `touch` — FT6336 via the FT5x06 driver, registered as an LVGL pointer indev |
-| ⬜️ Not started | graph UI, alerts, cloud, power |
+| ✅ Built | `recorder` + `ui` — one record per interval, graph backfilled from the log on boot, main screen with readout / chart / status strip |
+| ⬜️ Not started | menu + editors, alerts, cloud + config service, power |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
 power. Each step ends at something flashable and observable. (Sensor jumped
 ahead of touch — with the part wired up, confirming it reads correctly was worth
 more than an input device nothing yet listens to.)
+
+`recorder` was not in the original plan as its own step. It landed with the main
+screen because a chart needs a source: nothing was writing a `TempRecord` on the
+settings interval, so the graph had no history to draw and none would have
+survived a reboot. Making it one component with one job also gives M7's alarm
+state machine and M9's RTC-memory mirror an obvious place to attach.
 
 ### Open questions
 

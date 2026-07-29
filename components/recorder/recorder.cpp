@@ -1,0 +1,225 @@
+#include "recorder.hpp"
+
+#include <algorithm>
+#include <ctime>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+
+#include "alert_logic.hpp"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "sensor.hpp"
+#include "settings.hpp"
+#include "storage.hpp"
+
+namespace thermopost::recorder {
+namespace {
+
+constexpr const char* kTag = "recorder";
+
+// The ring is sized for the widest graph the settings allow, so changing
+// graph_points never needs a reallocation — 480 samples is under a kilobyte.
+constexpr size_t kRingCap = settings::kGraphPointsMax;
+
+// The task wakes on this tick and accumulates towards interval_s rather than
+// sleeping for the whole interval. Sleeping the full period would mean an
+// interval changed from an hour to ten seconds takes up to an hour to apply,
+// which reads as the setting being broken. One wake a second costs nothing —
+// `sensor` already does exactly this.
+constexpr uint32_t kTickMs = 1000;
+
+// Below this, the system clock has not been set by SNTP and epoch_s must be
+// stored as 0 (see storage.hpp). Roughly Nov 2023 — comfortably after any
+// plausible build date and far above the 1970 an unsynced ESP32 reports.
+constexpr uint32_t kEpochValidFrom = 1'700'000'000;
+
+// Records per read during the boot backfill. Small enough to sit on the stack.
+constexpr size_t kBackfillChunk = 32;
+
+constexpr uint32_t kTaskStack = 4096;  // LittleFS write + fsync need the room
+constexpr UBaseType_t kTaskPrio = 2;   // below sensor's 3: freshness beats logging
+constexpr BaseType_t kTaskCore = 0;
+
+int16_t  s_ring[kRingCap] = {};
+size_t   s_count = 0;  // valid entries, <= kRingCap
+size_t   s_head  = 0;  // next write position
+uint32_t s_generation = 0;
+uint32_t s_written = 0;
+
+SemaphoreHandle_t s_lock = nullptr;
+bool s_inited = false;
+
+// A mutex, not a portMUX spinlock: history() copies up to 960 bytes and holding
+// interrupts off for that long to serve a redraw would be the wrong trade.
+struct Guard {
+  Guard()  { if (s_lock != nullptr) xSemaphoreTake(s_lock, portMAX_DELAY); }
+  ~Guard() { if (s_lock != nullptr) xSemaphoreGive(s_lock); }
+};
+
+void ring_push(int16_t v) {
+  s_ring[s_head] = v;
+  s_head = (s_head + 1) % kRingCap;
+  if (s_count < kRingCap) ++s_count;
+}
+
+// Was this reading outside the band? A bare compare, deliberately — not
+// alert::step().
+//
+// The two answer different questions. The state machine's hysteresis governs when
+// the *device* stops alarming, which is about not chattering the speaker. This
+// flag is a property of the sample: it has to stay re-derivable from the stored
+// temperature and the band, or a Sheet column that disagrees with its own numbers
+// is worse than no column. So M7 changing how the device behaves does not change
+// what gets written here.
+uint8_t sample_flags(int16_t c100, bool valid) {
+  if (!valid) return storage::kFlagSensorFault;
+  const alert::Thresholds t = settings::thresholds();
+  if (c100 > t.max_c100) return storage::kFlagAlarmHigh;
+  if (c100 < t.min_c100) return storage::kFlagAlarmLow;
+  return 0;
+}
+
+void write_one() {
+  const sensor::Reading r = sensor::latest();
+  const int16_t value = r.valid ? r.temp_c100 : kInvalidTempC100;
+
+  const std::time_t now = std::time(nullptr);
+
+  storage::TempRecord rec = {};
+  rec.flags     = sample_flags(value, r.valid);
+  rec.temp_c100 = value;
+  rec.epoch_s   = now > static_cast<std::time_t>(kEpochValidFrom)
+                      ? static_cast<uint32_t>(now)
+                      : 0;
+  rec.uptime_us = esp_timer_get_time();
+
+  // The ring updates whether or not the append succeeds: a full or broken
+  // filesystem should cost the log, not the graph the user is looking at. The
+  // written counter is deliberately NOT bumped here alongside it — see below.
+  {
+    Guard g;
+    ring_push(value);
+    ++s_generation;
+  }
+
+  const esp_err_t err = storage::append(rec);
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag, "append failed: %s", esp_err_to_name(err));
+    return;
+  }
+
+  // Only now, because this counter is shown on screen as the answer to "is it
+  // still recording?". Incrementing it before the append would make it climb
+  // serenely through exactly the failure it exists to reveal.
+  {
+    Guard g;
+    ++s_written;
+  }
+
+  ESP_LOGI(kTag, "#%lu %.2f C flags=0x%02X%s",
+           static_cast<unsigned long>(storage::next_index() - 1),
+           static_cast<double>(value) / 100.0, rec.flags,
+           rec.epoch_s == 0 ? " (clock not set)" : "");
+}
+
+void task(void*) {
+  TickType_t last = xTaskGetTickCount();
+  uint32_t elapsed_ms = 0;
+
+  for (;;) {
+    xTaskDelayUntil(&last, pdMS_TO_TICKS(kTickMs));
+    elapsed_ms += kTickMs;
+
+    // Re-read the interval every tick so an edit from the menu or the web form
+    // applies within a second. A shortened interval that is already overdue
+    // fires immediately rather than waiting out the old period.
+    const uint32_t period_ms =
+        static_cast<uint32_t>(settings::get().interval_s) * 1000u;
+    if (elapsed_ms < period_ms) continue;
+
+    elapsed_ms = 0;
+    write_one();
+  }
+}
+
+// Seed the ring from the log so the graph is populated the moment the screen
+// draws. Reads at most kRingCap records; a longer log yields its tail.
+//
+// Chunked rather than one read_recent(kRingCap) call: that would want a 7.5 KB
+// buffer, too much for this task's stack and not worth holding in BSS for the
+// rest of the device's uptime to serve something that runs once.
+void backfill() {
+  const uint32_t total = storage::count();
+  const uint32_t take = std::min<uint32_t>(total, kRingCap);
+  if (take == 0) {
+    ESP_LOGI(kTag, "log is empty; the graph starts blank and fills from here");
+    return;
+  }
+
+  // out_first_index is safely nullptr here: take <= count, so this start index
+  // cannot land below first_index() and rotation can't have dropped it.
+  uint32_t idx = storage::next_index() - take;
+  storage::TempRecord chunk[kBackfillChunk];
+  uint32_t done = 0;
+
+  while (done < take) {
+    const size_t want = std::min<uint32_t>(kBackfillChunk, take - done);
+    const size_t got = storage::read_from(idx, chunk, want, nullptr);
+    if (got == 0) break;  // short read shouldn't happen; don't spin on it
+    for (size_t i = 0; i < got; ++i) {
+      ring_push((chunk[i].flags & storage::kFlagSensorFault) ? kInvalidTempC100
+                                                            : chunk[i].temp_c100);
+    }
+    idx  += got;
+    done += got;
+  }
+
+  ESP_LOGI(kTag, "backfilled %lu of %lu logged records",
+           static_cast<unsigned long>(done), static_cast<unsigned long>(total));
+}
+
+}  // namespace
+
+esp_err_t init() {
+  if (s_inited) return ESP_ERR_INVALID_STATE;
+
+  s_lock = xSemaphoreCreateMutex();
+  if (s_lock == nullptr) return ESP_ERR_NO_MEM;
+
+  backfill();
+
+  if (xTaskCreatePinnedToCore(task, "recorder", kTaskStack, nullptr, kTaskPrio,
+                              nullptr, kTaskCore) != pdPASS) {
+    vSemaphoreDelete(s_lock);
+    s_lock = nullptr;
+    return ESP_ERR_NO_MEM;
+  }
+
+  s_inited = true;
+  ESP_LOGI(kTag, "logging every %us", static_cast<unsigned>(settings::get().interval_s));
+  return ESP_OK;
+}
+
+size_t history(int16_t* out, size_t n) {
+  if (out == nullptr || n == 0) return 0;
+  Guard g;
+  const size_t take = std::min(n, s_count);
+  size_t idx = (s_head + kRingCap - take) % kRingCap;
+  for (size_t i = 0; i < take; ++i) {
+    out[i] = s_ring[idx];
+    idx = (idx + 1) % kRingCap;
+  }
+  return take;
+}
+
+uint32_t generation() { Guard g; return s_generation; }
+uint32_t written()    { Guard g; return s_written; }
+
+// Forwarded rather than letting the UI reach into storage: this component is the
+// only thing that writes records, so "how many are there" is its question to
+// answer, and the screens stay free of any filesystem dependency.
+uint32_t total() { return storage::next_index(); }
+
+}  // namespace thermopost::recorder
