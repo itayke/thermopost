@@ -180,8 +180,8 @@ without a reboot.
 The menu pill is espressopost's, scaled for a 320 px screen: an amber outlined
 capsule holding a hamburger glyph and the word *Menu* in a centred flex row.
 Outline, label and glyph all tint green under a finger, and the tap is logged, but
-it has nowhere to go until M6. The glyph is painted as three rounded bars rather
-than set as `LV_SYMBOL_BARS`, which the built-in font does carry — espressopost's
+it has nowhere to go until M6. The glyph is painted as three 1 px bars rather than
+set as `LV_SYMBOL_BARS`, which the built-in font does carry — espressopost's
 reasoning applies here too: a painted glyph tints and scales with the layout
 instead of being pinned to whatever the font designer chose.
 

@@ -42,7 +42,8 @@ constexpr const char* kNoClock = "no clock";
 // espressopost's menu pill so the affordance reads identically on both devices.
 // Scaled down for a 320 px screen: its label is Montserrat 14 rather than 24.
 constexpr int32_t kMenuBtnW = 78;
-constexpr int32_t kMenuBtnH = 24;
+constexpr int32_t kMenuBtnH = 25;
+constexpr int32_t kMenuBtnY = kTopPad + 2;
 constexpr int32_t kMenuBtnStroke = 2;
 constexpr int32_t kMenuBtnExtClick = 10;  // hit area grows; the outline does not
 constexpr int32_t kMenuRowGap = 6;        // between the glyph and the label
@@ -51,15 +52,15 @@ constexpr int32_t kMenuRowGap = 6;        // between the glyph and the label
 // espressopost's reason holds here: a painted glyph tints and scales exactly with
 // the layout instead of being pinned to whatever the font designer chose, and it
 // matches the house style of its other custom glyphs.
-constexpr int32_t kBurgerW    = 18;  // bar length
+constexpr int32_t kBurgerW    = 14;  // bar length
 constexpr int32_t kBurgerH    = 16;  // glyph box
-constexpr int32_t kBurgerBarH = 3;   // bar thickness
-constexpr int32_t kBurgerGap  = 5;   // centre-to-centre spacing
+constexpr int32_t kBurgerBarH = 1;   // bar thickness; thinner than espressopost's 3
+constexpr int32_t kBurgerGap  = 4;   // centre-to-centre spacing
 constexpr int32_t kBurgerRows = 3;
 static_assert((kBurgerRows - 1) * kBurgerGap + kBurgerBarH <= kBurgerH,
               "hamburger bars overflow their glyph box");
 
-constexpr int32_t kClockY = kTopPad + kMenuBtnH + 2;
+constexpr int32_t kClockY = kMenuBtnY + kMenuBtnH + 3;
 // Wide enough for kNoClock and no wider, so a long value can never grow into the
 // readout's space.
 constexpr int32_t kClockW = 64;
@@ -444,7 +445,7 @@ void build_menu_pill(lv_obj_t* scr) {
   lv_obj_set_style_border_width(s_menu_btn, kMenuBtnStroke, LV_PART_MAIN);
   lv_obj_set_style_border_opa(s_menu_btn, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_set_ext_click_area(s_menu_btn, kMenuBtnExtClick);
-  lv_obj_set_pos(s_menu_btn, kEdgePad, kTopPad);
+  lv_obj_set_pos(s_menu_btn, kEdgePad, kMenuBtnY);
   lv_obj_add_event_cb(s_menu_btn, menu_pressed, LV_EVENT_PRESSED, nullptr);
   lv_obj_add_event_cb(s_menu_btn, menu_released, LV_EVENT_RELEASED, nullptr);
 
