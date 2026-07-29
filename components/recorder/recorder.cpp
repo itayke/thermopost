@@ -29,6 +29,7 @@ constexpr size_t kRingCap = settings::kGraphPointsMax;
 // which reads as the setting being broken. One wake a second costs nothing —
 // `sensor` already does exactly this.
 constexpr uint32_t kTickMs = 1000;
+constexpr uint32_t kMsPerSec = 1000;
 
 // Below this, the system clock has not been set by SNTP and epoch_s must be
 // stored as 0 (see storage.hpp). Roughly Nov 2023 — comfortably after any
@@ -136,7 +137,7 @@ void task(void*) {
     // applies within a second. A shortened interval that is already overdue
     // fires immediately rather than waiting out the old period.
     const uint32_t period_ms =
-        static_cast<uint32_t>(settings::get().interval_s) * 1000u;
+        static_cast<uint32_t>(settings::get().interval_s) * kMsPerSec;
     if (elapsed_ms < period_ms) continue;
 
     elapsed_ms = 0;

@@ -43,7 +43,11 @@ constexpr const char* kNoClock = "no clock";
 // Scaled down for a 320 px screen: its label is Montserrat 14 rather than 24.
 constexpr int32_t kMenuBtnW = 78;
 constexpr int32_t kMenuBtnH = 25;
-constexpr int32_t kMenuBtnY = kTopPad + 2;
+// The pill and the chips both sit slightly below the band's top edge so they read
+// as optically level with the readout's digits, whose glyphs start below their own
+// line box. One knob, shared by both columns, so they can't drift apart.
+constexpr int32_t kTopRowNudge = 2;
+constexpr int32_t kMenuBtnY = kTopPad + kTopRowNudge;
 constexpr int32_t kMenuBtnStroke = 2;
 constexpr int32_t kMenuBtnExtClick = 10;  // hit area grows; the outline does not
 constexpr int32_t kMenuRowGap = 6;        // between the glyph and the label
@@ -60,10 +64,16 @@ constexpr int32_t kBurgerRows = 3;
 static_assert((kBurgerRows - 1) * kBurgerGap + kBurgerBarH <= kBurgerH,
               "hamburger bars overflow their glyph box");
 
-constexpr int32_t kClockY = kMenuBtnY + kMenuBtnH + 3;
+// Derived from the pill's own origin and height, never from kTopPad again: the
+// clock has to follow the pill when the pill moves, and recomputing the same sum
+// is exactly how the two came apart the first time.
+constexpr int32_t kClockGap = 3;
+constexpr int32_t kClockY = kMenuBtnY + kMenuBtnH + kClockGap;
 // Wide enough for kNoClock and no wider, so a long value can never grow into the
 // readout's space.
 constexpr int32_t kClockW = 64;
+static_assert(kClockY + kFont14H <= kTopPad + kReadoutH,
+              "the clock row overflows the top band");
 
 // --- Top band: threshold chips (right) --------------------------------------
 // The arrow sits at a fixed offset from the right edge and the number is centred
@@ -74,8 +84,10 @@ constexpr int32_t kChipNumW   = 46;  // fits "-40.0" and "257.0"
 constexpr int32_t kChipArrowW = 14;
 constexpr int32_t kChipArrowX = kScreenW - kEdgePad - kChipNumW - kChipArrowW;
 constexpr int32_t kChipNumX   = kChipArrowX + kChipArrowW;
-constexpr int32_t kChipY      = kTopPad + 2;
-constexpr int32_t kChipSpacing = kFont14H + 2;
+constexpr int32_t kChipY      = kTopPad + kTopRowNudge;
+// Leading between the two chip rows — a line height alone sets them touching.
+constexpr int32_t kChipLeading = 2;
+constexpr int32_t kChipSpacing = kFont14H + kChipLeading;
 static_assert(kChipArrowX > kScreenW / 2, "threshold chips reach past the centre");
 
 // The readout centres in the gap between the two side columns rather than on the
@@ -99,10 +111,16 @@ constexpr const char* kNotUploaded = "--";
 // --- Chart ------------------------------------------------------------------
 constexpr uint32_t kChartHDiv = 4;
 constexpr uint32_t kChartVDiv = 6;
+// Zero, so the object's area is exactly the plot area — see build_chart().
+constexpr int32_t  kChartPad = 0;
 constexpr int32_t  kTraceWidth = 2;
 constexpr int32_t  kThresholdWidth = 1;
 constexpr int32_t  kThresholdDash = 4;
 constexpr int32_t  kThresholdGap  = 4;
+constexpr int32_t  kGridWidth = 1;
+// Zero hides the per-sample dots. At a couple of pixels per point they merge into a
+// thicker, blurrier line rather than reading as data.
+constexpr int32_t  kPointDiam = 0;
 
 // The y range always covers the band as well as the data, so the threshold lines
 // stay on screen even when the reading is nowhere near them.
@@ -408,16 +426,24 @@ void build_chart(lv_obj_t* scr) {
   // Zero padding so the object's area IS the plot area. y_for() and the threshold
   // lines both assume that; a default pad would shift every line by a few pixels
   // and the error would look like a calibration problem rather than a layout one.
-  lv_obj_set_style_pad_all(s_chart, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(s_chart, kChartPad, LV_PART_MAIN);
   lv_obj_set_style_bg_color(s_chart, kColorPanel, LV_PART_MAIN);
   lv_obj_set_style_border_color(s_chart, kColorGrid, LV_PART_MAIN);
   lv_obj_set_style_border_width(s_chart, kChartBorderPx, LV_PART_MAIN);
-  lv_obj_set_style_line_color(s_chart, kColorGrid, LV_PART_ITEMS);
-  // No dots on the trace: at a couple of pixels per sample they merge into a
-  // thicker, blurrier line rather than reading as data points.
-  lv_obj_set_style_size(s_chart, 0, 0, LV_PART_INDICATOR);
+
+  // Division lines are drawn from LV_PART_MAIN, not LV_PART_ITEMS — draw_div_lines()
+  // inits its descriptor from MAIN. Styling them on ITEMS (the obvious guess, since
+  // that is where the trace lives) is silently ineffective, and because MAIN's
+  // default line_width is 0 the grid then does not draw at all.
+  lv_obj_set_style_line_color(s_chart, kColorGrid, LV_PART_MAIN);
+  lv_obj_set_style_line_width(s_chart, kGridWidth, LV_PART_MAIN);
+
+  lv_obj_set_style_size(s_chart, kPointDiam, kPointDiam, LV_PART_INDICATOR);
   lv_obj_remove_flag(s_chart, LV_OBJ_FLAG_CLICKABLE);
 
+  // The trace takes its colour from the series, not from a style: draw_series_line()
+  // overwrites the descriptor's colour with ser->color. Its *width* does come from
+  // ITEMS, so the two are configured in different places by necessity.
   s_series = lv_chart_add_series(s_chart, kColorNormal, LV_CHART_AXIS_PRIMARY_Y);
   lv_obj_set_style_line_width(s_chart, kTraceWidth, LV_PART_ITEMS);
 
