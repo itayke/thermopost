@@ -126,10 +126,19 @@ below the minimum, amber when the sensor isn't answering. The colour says which
 way the temperature went before the digits are legible, which is what a screen
 read across a room actually conveys.
 
+The unit rides after the digits at the small text size, sitting on their baseline.
+That offset is computed from the two fonts' own metrics — a baseline is
+`line_height - base_line` below a box's top — rather than dialled in by eye, so
+changing either font keeps them aligned. The pair lives in a flex row and is centred
+as a group, because centring the number alone and hanging the unit off its right
+would shift the whole readout off-centre by half the unit's width.
+
 **Tapping the reading swaps °C and °F**, thresholds included, and the choice is
 saved. Nothing stored changes: every value on the device is hundredths of a degree
 Celsius and `settings::display_value()` is the only thing that converts, so the
-unit is a property of the screen and never of the log or the Sheet.
+unit is a property of the screen and never of the log or the Sheet. The unit stays
+on screen even with no reading, so an unplugged sensor doesn't make the toggle look
+broken.
 
 The two threshold chips put their arrows at a fixed offset from the right edge and
 centre the numbers beside them. Formatting arrow and number into one right-aligned
@@ -144,6 +153,27 @@ left-hand caption is the window the plot spans — `graph_points × interval`, s
 120 points at a minute each is `-2h`. Until the ring fills, the left of the plot
 is empty rather than stretched: a short history shouldn't imply a window that
 hasn't elapsed yet.
+
+**A record is an aggregate, not a snapshot.** The sensor is read once a second but
+a record is written once per interval, so storing whichever reading happened to be
+current at the boundary would throw away the other 59 — and hide any excursion
+between them, on a device whose whole job is noticing excursions. Each record
+therefore carries the interval's **mean, minimum and maximum**, and the graph draws
+all three: the mean as the bright trace, min and max as a dimmer envelope either
+side. A one-second spike shows up as a spike in the envelope even though the mean
+barely moves.
+
+The alarm flags stored with a record are tested against the *extremes*, not the
+mean, for the same reason — a minute that averaged its way back inside the band
+while its own maximum says otherwise is exactly the case this is here to catch.
+Both the high and low bits can be set on one record: a minute that swung all the
+way through the band genuinely breached both.
+
+Extremes rather than, say, the largest deviation from some midpoint: a deviation
+depends on what the reference was when it was written, so the same physical spike
+would encode differently after the band was edited, and the record would stop being
+re-derivable from its own numbers. min and max are facts about the interval and
+nothing else.
 
 The clock sits under the menu glyph and reads `no clock` until SNTP lands —
 showing a 1970 timestamp would be a bug report rather than a fact. The phrase is
@@ -291,6 +321,19 @@ the code is. Push the IDF dependency into the `alert.cpp` wrapper instead.
 ```
 
 ### Two design notes worth knowing up front
+
+**A schema change that cost nothing.** The record went from v1 (one sample, plus a
+64-bit microsecond uptime) to v2 (mean/min/max, plus a 32-bit *second* uptime) and
+stayed exactly 16 bytes — the narrowed uptime pays for the two new fields, and 32
+bits of seconds is 136 years for a field whose only job is ordering records at least
+ten seconds apart. Because the size is unchanged, record *N* is still at offset
+*N* × 16, so v1 and v2 records coexist in one file, absolute indices and any cloud
+high-water mark stay valid, and no history had to be rewritten or discarded.
+`storage`'s reads upgrade v1 records on the way out — a v1 record becomes its own
+min and max, which is honest: one sample really is all that interval ever
+captured — so nothing above `storage` knows the older layout exists. That is what
+the `version` byte was reserved for, and it only works if the size holds, which is
+why it was worth narrowing a field rather than appending four bytes.
 
 **Rotation and absolute indices.** Cloud sync tracks what it has uploaded with a
 high-water mark, so a record's index has to mean the same thing forever. But at a

@@ -21,7 +21,42 @@ constexpr const char* kLittlefsTag  = "esp_littlefs";  // the library's own log 
 constexpr const char* kBasePath     = "/littlefs";
 constexpr const char* kLogPath      = "/littlefs/temps.bin";
 constexpr const char* kLogTmpPath   = "/littlefs/temps.bin.tmp";
-constexpr uint8_t     kRecordVersion = 1;
+constexpr uint8_t     kRecordVersion = 2;
+
+// The v1 layout, kept only so records written before the aggregate schema can be
+// read. Same 16 bytes as v2 — that is the whole reason the two can share a file
+// and why nothing had to be rewritten when the schema changed. Private: callers
+// never see a v1 record, because every read upgrades on the way out.
+struct __attribute__((packed)) TempRecordV1 {
+  uint8_t  version;
+  uint8_t  flags;
+  int16_t  temp_c100;
+  uint32_t epoch_s;
+  int64_t  uptime_us;
+};
+static_assert(sizeof(TempRecordV1) == sizeof(TempRecord),
+              "the v1 and v2 layouts must be the same size to share one file");
+
+constexpr int64_t kUsPerSec = 1'000'000;
+
+// Reinterpret a record read from disk as the current schema. A v1 record is a
+// single instantaneous sample, so it is its own minimum and maximum — which is
+// honest rather than a fudge: that really is all the interval's history that was
+// ever captured, and pretending otherwise would be worse than saying so.
+void upgrade_in_place(TempRecord* r) {
+  if (r == nullptr || r->version >= kRecordVersion) return;
+
+  TempRecordV1 old;
+  std::memcpy(&old, r, sizeof(old));  // copy first: the fields overlap
+
+  r->version   = kRecordVersion;
+  r->flags     = old.flags;
+  r->temp_c100 = old.temp_c100;
+  r->min_c100  = old.temp_c100;
+  r->max_c100  = old.temp_c100;
+  r->epoch_s   = old.epoch_s;
+  r->uptime_s  = static_cast<uint32_t>(old.uptime_us / kUsPerSec);
+}
 
 // NVS holds the base index — the absolute record number of the record currently
 // at file offset 0. See the rotation transaction below for why there are two
@@ -369,6 +404,10 @@ size_t read_from(uint32_t from_index, TempRecord* out, size_t max,
   }
   const size_t n = std::fread(out, sizeof(TempRecord), max, f);
   std::fclose(f);
+
+  // Every read funnels through here, so this one hook is the whole migration:
+  // callers above this line never have to know v1 records exist.
+  for (size_t i = 0; i < n; ++i) upgrade_in_place(&out[i]);
   return n;
 }
 
@@ -428,16 +467,20 @@ void dump() {
     for (size_t i = 0; i < got; ++i) {
       const TempRecord& r = buf[i];
       if (r.temp_c100 == kInvalidTempC100) {
-        ESP_LOGI(kTag, "dump[%u]: ver=%u FAULT flags=0x%02x epoch=%u up_us=%lld",
+        ESP_LOGI(kTag, "dump[%u]: ver=%u FAULT flags=0x%02x epoch=%u up_s=%u",
                  static_cast<unsigned>(got_first + i), static_cast<unsigned>(r.version),
                  static_cast<unsigned>(r.flags), static_cast<unsigned>(r.epoch_s),
-                 static_cast<long long>(r.uptime_us));
+                 static_cast<unsigned>(r.uptime_s));
       } else {
-        ESP_LOGI(kTag, "dump[%u]: ver=%u T=%.2f flags=0x%02x epoch=%u up_us=%lld",
+        ESP_LOGI(kTag,
+                 "dump[%u]: ver=%u mean=%.2f min=%.2f max=%.2f flags=0x%02x "
+                 "epoch=%u up_s=%u",
                  static_cast<unsigned>(got_first + i), static_cast<unsigned>(r.version),
                  static_cast<double>(c100_to_temp(r.temp_c100)),
+                 static_cast<double>(c100_to_temp(r.min_c100)),
+                 static_cast<double>(c100_to_temp(r.max_c100)),
                  static_cast<unsigned>(r.flags), static_cast<unsigned>(r.epoch_s),
-                 static_cast<long long>(r.uptime_us));
+                 static_cast<unsigned>(r.uptime_s));
       }
     }
     idx = got_first + got;

@@ -23,13 +23,20 @@ constexpr const char* kTag = "recorder";
 // graph_points never needs a reallocation — 480 samples is under a kilobyte.
 constexpr size_t kRingCap = settings::kGraphPointsMax;
 
-// The task wakes on this tick and accumulates towards interval_s rather than
-// sleeping for the whole interval. Sleeping the full period would mean an
-// interval changed from an hour to ten seconds takes up to an hour to apply,
-// which reads as the setting being broken. One wake a second costs nothing —
-// `sensor` already does exactly this.
-constexpr uint32_t kTickMs = 1000;
+// The task wakes on this tick to fold the newest reading into the interval's
+// running aggregate, and accumulates towards interval_s rather than sleeping for
+// the whole period. Sleeping the full period would mean an interval changed from
+// an hour to ten seconds takes up to an hour to apply, which reads as the setting
+// being broken.
+//
+// Faster than the sensor's own 1 Hz on purpose. The two are independent timers and
+// will drift against each other, so a tick of exactly one second would now and
+// then step over a sample entirely — and if that sample is the spike, min/max miss
+// the one thing they exist to catch. Four ticks per sample makes that impossible;
+// the duplicates are filtered by sequence number below.
+constexpr uint32_t kTickMs = 250;
 constexpr uint32_t kMsPerSec = 1000;
+constexpr int64_t  kUsPerSec = 1'000'000;
 
 // Below this, the system clock has not been set by SNTP and epoch_s must be
 // stored as 0 (see storage.hpp). Roughly Nov 2023 — comfortably after any
@@ -43,65 +50,127 @@ constexpr uint32_t kTaskStack = 4096;  // LittleFS write + fsync need the room
 constexpr UBaseType_t kTaskPrio = 2;   // below sensor's 3: freshness beats logging
 constexpr BaseType_t kTaskCore = 0;
 
-int16_t  s_ring[kRingCap] = {};
+Sample   s_ring[kRingCap] = {};
 size_t   s_count = 0;  // valid entries, <= kRingCap
 size_t   s_head  = 0;  // next write position
 uint32_t s_generation = 0;
 uint32_t s_written = 0;
 
+// The interval's running aggregate, reset after every record.
+int32_t  s_sum_c100 = 0;
+uint32_t s_sum_n = 0;
+int16_t  s_min_c100 = 0;
+int16_t  s_max_c100 = 0;
+// The sensor's own successful-sample counter, last time one was folded in. It is
+// how a genuinely new reading is told from the same one seen again on the next
+// tick — polling latest() cannot distinguish them, and counting a stalled value
+// sixty times would drag the mean towards it.
+uint32_t s_seen_samples = 0;
+
 SemaphoreHandle_t s_lock = nullptr;
 bool s_inited = false;
 
-// A mutex, not a portMUX spinlock: history() copies up to 960 bytes and holding
+// A mutex, not a portMUX spinlock: history() copies nearly 3 KB and holding
 // interrupts off for that long to serve a redraw would be the wrong trade.
 struct Guard {
   Guard()  { if (s_lock != nullptr) xSemaphoreTake(s_lock, portMAX_DELAY); }
   ~Guard() { if (s_lock != nullptr) xSemaphoreGive(s_lock); }
 };
 
-void ring_push(int16_t v) {
-  s_ring[s_head] = v;
+void ring_push(const Sample& s) {
+  s_ring[s_head] = s;
   s_head = (s_head + 1) % kRingCap;
   if (s_count < kRingCap) ++s_count;
 }
 
-// Was this reading outside the band? A bare compare, deliberately — not
+void reset_aggregate() {
+  s_sum_c100 = 0;
+  s_sum_n = 0;
+  s_min_c100 = 0;
+  s_max_c100 = 0;
+}
+
+// Fold the newest reading in, if it is one we have not already counted.
+void accumulate() {
+  const sensor::Reading r = sensor::latest();
+  if (!r.valid || r.samples == s_seen_samples) return;
+  s_seen_samples = r.samples;
+
+  if (s_sum_n == 0) {
+    s_min_c100 = r.temp_c100;
+    s_max_c100 = r.temp_c100;
+  } else {
+    if (r.temp_c100 < s_min_c100) s_min_c100 = r.temp_c100;
+    if (r.temp_c100 > s_max_c100) s_max_c100 = r.temp_c100;
+  }
+  s_sum_c100 += r.temp_c100;
+  ++s_sum_n;
+}
+
+// Close the interval. An interval that produced nothing valid is a fault record
+// rather than a gap, so the log says the device was awake and the sensor was not.
+Sample close_aggregate() {
+  if (s_sum_n == 0) {
+    return {kInvalidTempC100, kInvalidTempC100, kInvalidTempC100};
+  }
+  // Rounds to nearest rather than truncating, so a steady 22.375 °C does not
+  // report as 22.37 for the life of the device.
+  const int32_t n = static_cast<int32_t>(s_sum_n);
+  const int32_t half = (s_sum_c100 < 0 ? -n : n) / 2;
+  return {static_cast<int16_t>((s_sum_c100 + half) / n), s_min_c100, s_max_c100};
+}
+
+// Did this interval breach the band? A bare compare, deliberately — not
 // alert::step().
 //
 // The two answer different questions. The state machine's hysteresis governs when
-// the *device* stops alarming, which is about not chattering the speaker. This
-// flag is a property of the sample: it has to stay re-derivable from the stored
-// temperature and the band, or a Sheet column that disagrees with its own numbers
-// is worse than no column. So M7 changing how the device behaves does not change
-// what gets written here.
-uint8_t sample_flags(int16_t c100, bool valid) {
-  if (!valid) return storage::kFlagSensorFault;
+// the *device* stops alarming, which is about not chattering the speaker. These
+// flags are a property of the record: they have to stay re-derivable from the
+// values stored beside them and the band, or a Sheet column disagrees with its own
+// numbers. So M7 changing how the device behaves does not change what is written
+// here.
+//
+// Tested against the interval's extremes rather than its mean, and both bits can
+// be set: a minute that swung through the band from below the minimum to above the
+// maximum genuinely breached both, and reporting only one would be a choice about
+// which half of the truth to keep. Testing the mean instead would let a five-second
+// excursion average its way back inside the band, which is the whole failure the
+// aggregate record exists to prevent.
+uint8_t interval_flags(const Sample& s) {
+  if (s.mean_c100 == kInvalidTempC100) return storage::kFlagSensorFault;
   const alert::Thresholds t = settings::thresholds();
-  if (c100 > t.max_c100) return storage::kFlagAlarmHigh;
-  if (c100 < t.min_c100) return storage::kFlagAlarmLow;
-  return 0;
+  uint8_t f = 0;
+  if (s.max_c100 > t.max_c100) f |= storage::kFlagAlarmHigh;
+  if (s.min_c100 < t.min_c100) f |= storage::kFlagAlarmLow;
+  return f;
 }
 
 void write_one() {
-  const sensor::Reading r = sensor::latest();
-  const int16_t value = r.valid ? r.temp_c100 : kInvalidTempC100;
+  const Sample s = close_aggregate();
+  const bool valid = s.mean_c100 != kInvalidTempC100;
 
   const std::time_t now = std::time(nullptr);
 
   storage::TempRecord rec = {};
-  rec.flags     = sample_flags(value, r.valid);
-  rec.temp_c100 = value;
+  // Flagged on the extremes, not the mean: an excursion that lasted five seconds
+  // out of sixty barely moves the average, and a record that averaged its way back
+  // inside the band while its own max says otherwise is the failure this whole
+  // change exists to prevent.
+  rec.flags     = interval_flags(s);
+  rec.temp_c100 = s.mean_c100;
+  rec.min_c100  = s.min_c100;
+  rec.max_c100  = s.max_c100;
   rec.epoch_s   = now > static_cast<std::time_t>(kEpochValidFrom)
                       ? static_cast<uint32_t>(now)
                       : 0;
-  rec.uptime_us = esp_timer_get_time();
+  rec.uptime_s  = static_cast<uint32_t>(esp_timer_get_time() / kUsPerSec);
 
   // The ring updates whether or not the append succeeds: a full or broken
   // filesystem should cost the log, not the graph the user is looking at. The
   // written counter is deliberately NOT bumped here alongside it — see below.
   {
     Guard g;
-    ring_push(value);
+    ring_push(s);
     ++s_generation;
   }
 
@@ -119,10 +188,18 @@ void write_one() {
     ++s_written;
   }
 
-  ESP_LOGI(kTag, "#%lu %.2f C flags=0x%02X%s",
-           static_cast<unsigned long>(storage::next_index() - 1),
-           static_cast<double>(value) / 100.0, rec.flags,
-           rec.epoch_s == 0 ? " (clock not set)" : "");
+  if (valid) {
+    ESP_LOGI(kTag, "#%lu mean %.2f  min %.2f  max %.2f  (%lu samples) flags=0x%02X%s",
+             static_cast<unsigned long>(storage::next_index() - 1),
+             static_cast<double>(s.mean_c100) / 100.0,
+             static_cast<double>(s.min_c100) / 100.0,
+             static_cast<double>(s.max_c100) / 100.0,
+             static_cast<unsigned long>(s_sum_n), rec.flags,
+             rec.epoch_s == 0 ? " (clock not set)" : "");
+  } else {
+    ESP_LOGW(kTag, "#%lu no valid reading in the whole interval",
+             static_cast<unsigned long>(storage::next_index() - 1));
+  }
 }
 
 void task(void*) {
@@ -133,15 +210,20 @@ void task(void*) {
     xTaskDelayUntil(&last, pdMS_TO_TICKS(kTickMs));
     elapsed_ms += kTickMs;
 
+    // Every tick, not just at the boundary. This is what makes a record a summary
+    // of its interval instead of a snapshot of the instant it happened to end.
+    accumulate();
+
     // Re-read the interval every tick so an edit from the menu or the web form
-    // applies within a second. A shortened interval that is already overdue
-    // fires immediately rather than waiting out the old period.
+    // applies promptly. A shortened interval that is already overdue fires
+    // immediately rather than waiting out the old period.
     const uint32_t period_ms =
         static_cast<uint32_t>(settings::get().interval_s) * kMsPerSec;
     if (elapsed_ms < period_ms) continue;
 
     elapsed_ms = 0;
     write_one();
+    reset_aggregate();
   }
 }
 
@@ -170,8 +252,14 @@ void backfill() {
     const size_t got = storage::read_from(idx, chunk, want, nullptr);
     if (got == 0) break;  // short read shouldn't happen; don't spin on it
     for (size_t i = 0; i < got; ++i) {
-      ring_push((chunk[i].flags & storage::kFlagSensorFault) ? kInvalidTempC100
-                                                            : chunk[i].temp_c100);
+      // storage upgrades v1 records on the way out, so min/max are always present
+      // here — for a v1 record they equal the single sample it stored, which is
+      // genuinely all the history that interval ever had.
+      if (chunk[i].flags & storage::kFlagSensorFault) {
+        ring_push({kInvalidTempC100, kInvalidTempC100, kInvalidTempC100});
+      } else {
+        ring_push({chunk[i].temp_c100, chunk[i].min_c100, chunk[i].max_c100});
+      }
     }
     idx  += got;
     done += got;
@@ -189,6 +277,7 @@ esp_err_t init() {
   s_lock = xSemaphoreCreateMutex();
   if (s_lock == nullptr) return ESP_ERR_NO_MEM;
 
+  reset_aggregate();
   backfill();
 
   if (xTaskCreatePinnedToCore(task, "recorder", kTaskStack, nullptr, kTaskPrio,
@@ -203,7 +292,7 @@ esp_err_t init() {
   return ESP_OK;
 }
 
-size_t history(int16_t* out, size_t n) {
+size_t history(Sample* out, size_t n) {
   if (out == nullptr || n == 0) return 0;
   Guard g;
   const size_t take = std::min(n, s_count);

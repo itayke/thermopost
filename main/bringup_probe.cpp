@@ -445,8 +445,12 @@ void probe_storage() {
   for (int i = 0; i < kN; ++i) {
     storage::TempRecord r = {};
     r.temp_c100 = storage::temp_to_c100(20.0f + 0.5f * i);
+    // Flat interval — a synthetic record has no spread to summarise, so its mean
+    // is also its minimum and maximum.
+    r.min_c100 = r.temp_c100;
+    r.max_c100 = r.temp_c100;
     r.epoch_s = 1'700'000'000u + i;
-    r.uptime_us = i;
+    r.uptime_s = static_cast<uint32_t>(i);
     if (storage::append(r) != ESP_OK) {
       check(false, "append 10 records", "append failed");
       return;

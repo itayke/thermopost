@@ -32,6 +32,10 @@ constexpr lv_color_t kColorText    = color(0xE8EAED);
 
 // Reading inside the band.
 constexpr lv_color_t kColorNormal = color(0x36C5D9);
+// The min/max envelope either side of the mean trace. Dim enough to read as
+// context rather than as three competing lines — the eye should follow the mean
+// and notice the envelope, not have to separate them.
+constexpr lv_color_t kColorEnvelope = color(0x1B6673);
 // High is warm and low is cold on purpose: the colour says which way the reading
 // went before the number is read, which is what a screen glanced at across a room
 // actually communicates.

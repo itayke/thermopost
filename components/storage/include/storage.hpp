@@ -36,24 +36,44 @@ constexpr uint8_t kFlagSensorFault = 1u << 2;
 // the MCP9808 only spans -40..+125 °C.
 constexpr int16_t kInvalidTempC100 = INT16_MIN;
 
-// Fixed-width on-disk record for one temperature sample. Packed and explicit so
-// the file is parseable off-device; little-endian (ESP32 native).
+// Fixed-width on-disk record summarising one logging interval. Packed and
+// explicit so the file is parseable off-device; little-endian (ESP32 native).
 //
-// `version` lets a future schema change be detected without a separate file
-// header, so a later layout change can be migrated in place. v1 is the first
-// schema, so there is no migration path to write yet; the byte exists so there
-// can be one later without a flag day.
+// **A record is an aggregate, not a snapshot.** The sensor is read once a second
+// but a record is written once per settings::interval_s, so storing the reading
+// that happened to be current at the boundary would discard the other 59 and hide
+// any excursion between them — on a device whose entire job is noticing
+// excursions. `temp_c100` is therefore the interval's mean, with `min_c100` and
+// `max_c100` carrying its extremes, so a one-second spike survives as a spike.
 //
-// `epoch_s` is 0 until SNTP lands (this board has no battery-backed RTC — see
-// the cloud component). Fall back to `uptime_us` for ordering when it is 0.
+// Extremes rather than a delta from some reference on purpose: a delta depends on
+// what the reference was when it was written, so the same physical spike would
+// encode differently after the band was edited, and the record would stop being
+// re-derivable. min/max are facts about the interval and nothing else.
+//
+// `epoch_s` is 0 until SNTP lands (this board has no battery-backed RTC — see the
+// cloud component). Fall back to `uptime_s` for ordering when it is 0.
+//
+// **v2, and deliberately still 16 bytes.** v1 held a single sample plus a 64-bit
+// microsecond uptime; the two new fields are paid for by narrowing that uptime to
+// 32-bit seconds, which is 136 years of range for a field whose only job is
+// ordering records at least ten seconds apart. Keeping the size identical is what
+// makes the migration free: record N stays at offset N × 16, so v1 and v2 records
+// coexist in one file, absolute indices and any cloud high-water mark stay valid,
+// and nothing has to be rewritten. Reads upgrade v1 records on the way out, so
+// callers only ever see the current schema.
 struct __attribute__((packed)) TempRecord {
-  uint8_t  version;    // 1 (current)
+  uint8_t  version;    // 2 (current)
   uint8_t  flags;      // see kFlag* above
-  int16_t  temp_c100;  // °C × 100 (e.g. 2237 = 22.37 °C); kInvalidTempC100 if none
+  int16_t  temp_c100;  // mean over the interval, °C × 100; kInvalidTempC100 if none
+  int16_t  min_c100;   // lowest reading in the interval; kInvalidTempC100 if none
+  int16_t  max_c100;   // highest reading in the interval; kInvalidTempC100 if none
   uint32_t epoch_s;    // wall-clock seconds since 1970; 0 until SNTP has synced
-  int64_t  uptime_us;  // esp_timer microseconds since boot — fallback ordering key
+  uint32_t uptime_s;   // esp_timer seconds since boot — fallback ordering key
 };
-static_assert(sizeof(TempRecord) == 16, "TempRecord wire size must be stable");
+static_assert(sizeof(TempRecord) == 16,
+              "TempRecord must stay 16 bytes — v1 records share the file at the "
+              "same stride, and changing it invalidates every absolute index");
 
 // Convenience for the °C ↔ stored-int conversion, so call sites don't sprinkle
 // magic 100s. Kept inline and IDF-free.

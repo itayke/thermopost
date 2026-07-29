@@ -25,6 +25,17 @@ namespace thermopost::recorder {
 // than draw them as a temperature.
 constexpr int16_t kInvalidTempC100 = INT16_MIN;
 
+// One interval's worth of history: its mean and its extremes. The extremes are the
+// point — a record is written once a minute from sixty readings, so a graph drawn
+// from the mean alone would smooth away exactly the excursions this device exists
+// to catch. All three are kInvalidTempC100 together when the interval produced no
+// valid reading at all.
+struct Sample {
+  int16_t mean_c100;
+  int16_t min_c100;
+  int16_t max_c100;
+};
+
 // Backfill the ring from the log and start the recording task. Requires
 // storage::init(), settings::init() and sensor::init() to have run — sensor may
 // have failed, which is fine: fault records are worth logging.
@@ -35,7 +46,7 @@ esp_err_t init();
 // Copy up to `n` of the most recent samples into `out`, oldest first. Returns how
 // many were written, which is fewer than `n` until the ring fills. Cheap enough
 // to call from the LVGL task, but see generation() before doing it every frame.
-size_t history(int16_t* out, size_t n);
+size_t history(Sample* out, size_t n);
 
 // Bumped every time a record is written. The UI polls this and rebuilds the chart
 // only when it changes — at a one-minute interval and a 4 Hz refresh that skips

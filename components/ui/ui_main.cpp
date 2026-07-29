@@ -98,6 +98,12 @@ static_assert(kChipArrowX > kScreenW / 2, "threshold chips reach past the centre
 constexpr int32_t kReadoutCx = (kEdgePad + kMenuBtnW + kChipArrowX) / 2;
 constexpr int32_t kReadoutDx = kReadoutCx - kScreenW / 2;
 
+// The unit rides after the digits at the small text size, in a flex row so the pair
+// stays centred as a group — centring the number alone and hanging the unit off its
+// right would shift the whole thing visibly off-centre by half the unit's width.
+// The degree glyph carries its own left sidebearing, so the gap is nearly nothing.
+constexpr int32_t kReadoutUnitGap = 2;
+
 // --- Status strip: name on the first row, counters on the second -------------
 constexpr int32_t kStatusW = kScreenW - 2 * kEdgePad;
 constexpr int32_t kStatusRow2Y = kStatusY + kFont14H;
@@ -114,6 +120,11 @@ constexpr uint32_t kChartVDiv = 6;
 // Zero, so the object's area is exactly the plot area — see build_chart().
 constexpr int32_t  kChartPad = 0;
 constexpr int32_t  kTraceWidth = 2;
+// The envelope is thinner than the mean trace so the mean stays the primary line.
+// LVGL styles line width per chart, not per series, so both come from LV_PART_ITEMS
+// and the envelope cannot actually be given its own width — this exists to be the
+// one place that changes if a later LVGL grows per-series styling.
+constexpr int32_t  kEnvelopeWidth = kTraceWidth;
 constexpr int32_t  kThresholdWidth = 1;
 constexpr int32_t  kThresholdDash = 4;
 constexpr int32_t  kThresholdGap  = 4;
@@ -136,7 +147,9 @@ constexpr std::time_t kEpochValidFrom = 1'700'000'000;
 constexpr uint32_t kSecPerMin  = 60;
 constexpr uint32_t kSecPerHour = 3600;
 
+lv_obj_t* s_readout_row = nullptr;
 lv_obj_t* s_value_lbl   = nullptr;
+lv_obj_t* s_unit_lbl    = nullptr;
 lv_obj_t* s_max_num     = nullptr;
 lv_obj_t* s_min_num     = nullptr;
 lv_obj_t* s_chart       = nullptr;
@@ -150,7 +163,12 @@ lv_obj_t* s_clock_lbl   = nullptr;
 lv_obj_t* s_menu_btn    = nullptr;
 lv_obj_t* s_menu_glyph  = nullptr;
 lv_obj_t* s_menu_lbl    = nullptr;
-lv_chart_series_t* s_series = nullptr;
+// Mean plus the min/max envelope. Three series rather than one because a record is
+// an aggregate of sixty readings — plotting only the mean would smooth away the
+// short excursions the device exists to catch.
+lv_chart_series_t* s_mean_series = nullptr;
+lv_chart_series_t* s_min_series = nullptr;
+lv_chart_series_t* s_max_series = nullptr;
 
 // The painter reads this, so the glyph tints with the rest of the pill.
 bool s_menu_pressed = false;
@@ -160,11 +178,13 @@ bool s_menu_pressed = false;
 // Spans the plot area, not the object, so it stops at the chart's inner border.
 lv_point_precise_t s_line_pts[2] = {{0, 0}, {kPlotW, 0}};
 
-// Scratch for the chart rebuild. File scope rather than stack: 480 points is
-// nearly 3 KB across both, and the LVGL task's stack has better uses. Only ever
-// touched from refresh(), which runs on that one task.
-int16_t s_hist[settings::kGraphPointsMax];
-int32_t s_plot[settings::kGraphPointsMax];
+// Scratch for the chart rebuild. File scope rather than stack: 480 points across
+// four arrays is nearly 9 KB, and the LVGL task's stack has better uses. Only ever
+// touched from rebuild_chart(), which runs on that one task.
+recorder::Sample s_hist[settings::kGraphPointsMax];
+int32_t s_plot_mean[settings::kGraphPointsMax];
+int32_t s_plot_min[settings::kGraphPointsMax];
+int32_t s_plot_max[settings::kGraphPointsMax];
 
 // Redraw guards — the chart is rebuilt only when something it draws from moved.
 // The unit is deliberately not among them: the chart plots hundredths of a degree
@@ -224,14 +244,15 @@ void rebuild_chart(const settings::Settings& s, const alert::Thresholds& t) {
   const size_t points = s.graph_points;
   const size_t n = recorder::history(s_hist, points);
 
-  // Range from the samples and the band together. Starting from the band means a
-  // log with no valid readings still produces a sane axis.
+  // Range from the extremes and the band together — the envelope, not just the
+  // mean, or a spike would be drawn clipped against the frame. Starting from the
+  // band means a log with no valid readings still produces a sane axis.
   int32_t lo = std::min(t.min_c100, t.max_c100);
   int32_t hi = std::max(t.min_c100, t.max_c100);
   for (size_t i = 0; i < n; ++i) {
-    if (s_hist[i] == recorder::kInvalidTempC100) continue;
-    lo = std::min<int32_t>(lo, s_hist[i]);
-    hi = std::max<int32_t>(hi, s_hist[i]);
+    if (s_hist[i].mean_c100 == recorder::kInvalidTempC100) continue;
+    lo = std::min<int32_t>(lo, s_hist[i].min_c100);
+    hi = std::max<int32_t>(hi, s_hist[i].max_c100);
   }
   if (hi - lo < kRangeMinSpanC100) {
     const int32_t mid = (lo + hi) / 2;
@@ -245,16 +266,29 @@ void rebuild_chart(const settings::Settings& s, const alert::Thresholds& t) {
   // filled, rather than stretching a short history across the whole plot and
   // implying a window that hasn't elapsed yet.
   const size_t pad = points - n;
-  for (size_t i = 0; i < pad; ++i) s_plot[i] = LV_CHART_POINT_NONE;
+  for (size_t i = 0; i < pad; ++i) {
+    s_plot_mean[i] = LV_CHART_POINT_NONE;
+    s_plot_min[i]  = LV_CHART_POINT_NONE;
+    s_plot_max[i]  = LV_CHART_POINT_NONE;
+  }
   for (size_t i = 0; i < n; ++i) {
-    s_plot[pad + i] = s_hist[i] == recorder::kInvalidTempC100
-                          ? LV_CHART_POINT_NONE
-                          : static_cast<int32_t>(s_hist[i]);
+    const recorder::Sample& h = s_hist[i];
+    const bool gap = h.mean_c100 == recorder::kInvalidTempC100;
+    s_plot_mean[pad + i] = gap ? LV_CHART_POINT_NONE : h.mean_c100;
+    s_plot_min[pad + i]  = gap ? LV_CHART_POINT_NONE : h.min_c100;
+    s_plot_max[pad + i]  = gap ? LV_CHART_POINT_NONE : h.max_c100;
   }
 
   lv_chart_set_point_count(s_chart, static_cast<uint32_t>(points));
   lv_chart_set_axis_range(s_chart, LV_CHART_AXIS_PRIMARY_Y, lo, hi);
-  lv_chart_set_series_values(s_chart, s_series, s_plot, points);
+  // Exactly `points` values per series, which is not merely tidy:
+  // lv_chart_set_series_values is a loop over lv_chart_set_next_value, and that
+  // writes at the series' circular start_point and advances it. Writing the point
+  // count leaves start_point back where it began; any other count silently rotates
+  // the whole trace instead of erroring.
+  lv_chart_set_series_values(s_chart, s_min_series,  s_plot_min,  points);
+  lv_chart_set_series_values(s_chart, s_max_series,  s_plot_max,  points);
+  lv_chart_set_series_values(s_chart, s_mean_series, s_plot_mean, points);
 
   lv_obj_set_pos(s_max_line, 0, y_for(t.max_c100, lo, hi));
   lv_obj_set_pos(s_min_line, 0, y_for(t.min_c100, lo, hi));
@@ -282,16 +316,22 @@ void refresh(lv_timer_t*) {
   const sensor::Reading r = sensor::latest();
   char text[kTextMax];
 
-  // --- the number
+  // --- the number, with the unit trailing it at the small size
   if (r.valid) {
-    std::snprintf(text, sizeof(text), "%.1f%s",
-                  static_cast<double>(settings::display_value(r.temp_c100)),
-                  settings::unit_suffix());
+    std::snprintf(text, sizeof(text), "%.1f",
+                  static_cast<double>(settings::display_value(r.temp_c100)));
   } else {
     std::snprintf(text, sizeof(text), "%s", kNoValue);
   }
   lv_label_set_text(s_value_lbl, text);
-  lv_obj_set_style_text_color(s_value_lbl, reading_color(r, t), LV_PART_MAIN);
+  // The unit shows even with no reading: it is a property of the display, not of
+  // the value, and hiding it would make the tap-to-toggle look like it did nothing
+  // when the sensor is unplugged.
+  lv_label_set_text(s_unit_lbl, settings::unit_suffix());
+
+  const lv_color_t tint = reading_color(r, t);
+  lv_obj_set_style_text_color(s_value_lbl, tint, LV_PART_MAIN);
+  lv_obj_set_style_text_color(s_unit_lbl, tint, LV_PART_MAIN);
 
   // --- threshold chips. Only the numbers change; the arrows are fixed.
   std::snprintf(text, sizeof(text), "%.1f",
@@ -441,11 +481,17 @@ void build_chart(lv_obj_t* scr) {
   lv_obj_set_style_size(s_chart, kPointDiam, kPointDiam, LV_PART_INDICATOR);
   lv_obj_remove_flag(s_chart, LV_OBJ_FLAG_CLICKABLE);
 
-  // The trace takes its colour from the series, not from a style: draw_series_line()
-  // overwrites the descriptor's colour with ser->color. Its *width* does come from
-  // ITEMS, so the two are configured in different places by necessity.
-  s_series = lv_chart_add_series(s_chart, kColorNormal, LV_CHART_AXIS_PRIMARY_Y);
-  lv_obj_set_style_line_width(s_chart, kTraceWidth, LV_PART_ITEMS);
+  // A trace takes its colour from its series, not from a style: draw_series_line()
+  // overwrites the descriptor's colour with ser->color. Width, by contrast, is read
+  // from LV_PART_ITEMS and is therefore shared by every series — so the two are
+  // configured in different places, and the envelope cannot be drawn thinner than
+  // the mean however much it would like to be.
+  //
+  // Added envelope-first so the mean is registered last and draws on top of it.
+  s_min_series  = lv_chart_add_series(s_chart, kColorEnvelope, LV_CHART_AXIS_PRIMARY_Y);
+  s_max_series  = lv_chart_add_series(s_chart, kColorEnvelope, LV_CHART_AXIS_PRIMARY_Y);
+  s_mean_series = lv_chart_add_series(s_chart, kColorNormal, LV_CHART_AXIS_PRIMARY_Y);
+  lv_obj_set_style_line_width(s_chart, kEnvelopeWidth, LV_PART_ITEMS);
 
   for (lv_obj_t** slot : {&s_max_line, &s_min_line}) {
     *slot = lv_line_create(s_chart);
@@ -510,11 +556,40 @@ void build_top_band(lv_obj_t* scr) {
   lv_label_set_long_mode(s_clock_lbl, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_pos(s_clock_lbl, kEdgePad, kClockY);
 
-  // --- the readout, centred in the gap between the side columns
-  s_value_lbl = make_label(scr, &lv_font_montserrat_48, kColorText, kNoValue);
-  lv_obj_align(s_value_lbl, LV_ALIGN_TOP_MID, kReadoutDx, kReadoutY);
-  lv_obj_add_flag(s_value_lbl, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(s_value_lbl, value_clicked, LV_EVENT_CLICKED, nullptr);
+  // --- the readout, centred as a group in the gap between the side columns
+  s_readout_row = lv_obj_create(scr);
+  lv_obj_set_size(s_readout_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_style_bg_opa(s_readout_row, LV_OPA_TRANSP, LV_PART_MAIN);
+  lv_obj_set_style_border_width(s_readout_row, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(s_readout_row, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_column(s_readout_row, kReadoutUnitGap, LV_PART_MAIN);
+  lv_obj_set_layout(s_readout_row, LV_LAYOUT_FLEX);
+  lv_obj_set_flex_flow(s_readout_row, LV_FLEX_FLOW_ROW);
+  // Cross-axis START, i.e. both boxes hang from the same top edge. Deliberately not
+  // END: bottom-aligning two different sizes aligns their descender lines, not
+  // their baselines, which drops the unit visibly below the digits it belongs to.
+  lv_obj_set_flex_align(s_readout_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_remove_flag(s_readout_row, LV_OBJ_FLAG_SCROLLABLE);
+  // The whole group is the tap target, not just the digits — the labels are not
+  // clickable, so their events bubble here.
+  lv_obj_add_flag(s_readout_row, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(s_readout_row, value_clicked, LV_EVENT_CLICKED, nullptr);
+
+  s_value_lbl = make_label(s_readout_row, &lv_font_montserrat_48, kColorText, kNoValue);
+  s_unit_lbl = make_label(s_readout_row, &lv_font_montserrat_14, kColorText, "");
+
+  // Sit the unit on the digits' baseline, computed from the two fonts rather than
+  // guessed: a font's baseline is line_height - base_line below its box top, so the
+  // unit's box needs padding equal to the difference. Derived, so swapping either
+  // font keeps them aligned instead of quietly drifting apart.
+  const int32_t digits_baseline =
+      lv_font_montserrat_48.line_height - lv_font_montserrat_48.base_line;
+  const int32_t unit_baseline =
+      lv_font_montserrat_14.line_height - lv_font_montserrat_14.base_line;
+  lv_obj_set_style_pad_top(s_unit_lbl, digits_baseline - unit_baseline, LV_PART_MAIN);
+
+  lv_obj_align(s_readout_row, LV_ALIGN_TOP_MID, kReadoutDx, kReadoutY);
 
   // --- threshold chips, right. Arrows fixed, numbers centred beside them.
   lv_obj_t* max_arrow =
