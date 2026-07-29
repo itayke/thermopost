@@ -102,8 +102,19 @@ are cosmetic and never go away.
 
 ## Usage
 
-Flashing brings the board up through `display → nvs → storage → settings` and
-draws a placeholder screen. The real UI lands in a later milestone.
+Flashing brings the board up through `display → nvs → storage → settings → i2c
+→ sensor` and draws a readout screen: the temperature in the configured unit
+(°F by default) in large type, and under it the same reading in raw °C, the
+address the MCP9808 was found at, and a sample counter. The counter is there on
+purpose — a number that stops moving is otherwise indistinguishable from a very
+stable room. The same value is logged to serial once a second.
+
+The sensor is sampled every second regardless of the configured *logging*
+interval; those are two different cadences and only the second one is a setting.
+If the sensor is missing or the lead is pulled the screen says so in red and the
+sampler keeps rescanning, so reseating the connector recovers without a reboot.
+
+The real UI — graph, thresholds, menu — lands in a later milestone.
 
 ### The hardware bring-up probe
 
@@ -159,7 +170,9 @@ the code is. Push the IDF dependency into the `alert.cpp` wrapper instead.
 ├── sdkconfig.defaults      PSRAM, flash, partition table, FreeRTOS tick, console, LVGL
 ├── main/                   boot sequencer, board_pins, opt-in bring-up probe
 ├── components/
+│   ├── board_i2c/          the one shared I²C bus (touch + codec + sensor)
 │   ├── display/            ILI9341 over SPI + LVGL + LEDC backlight
+│   ├── sensor/             MCP9808 driver + 1 Hz sampling task
 │   ├── storage/            LittleFS append-log + rotation with stable absolute indices
 │   ├── settings/           NVS-backed interval / band / units / sound
 │   └── alert/              alarm decision logic (IDF-free, host-tested)
@@ -193,10 +206,13 @@ returns.
 | ✅ Built | Repo skeleton, bring-up probe, `storage`, `settings`, `alert` decision logic, host tests |
 | ✅ Verified | The gate: N16R8 (16 MB flash / 8 MB PSRAM), touch `0x38`, ES8311 `0x18`, MCP9808 `0x1A` reading room temperature |
 | ✅ Verified | `display` — ILI9341 + LVGL drawing correctly at 320×240, backlight under LEDC PWM |
-| ⬜️ Not started | touch, sensor, UI, alerts, cloud, power |
+| ✅ Built | `board_i2c` + `sensor` — MCP9808 found by manufacturer ID, sampled at 1 Hz, shown on screen |
+| ⬜️ Not started | touch, graph UI, alerts, cloud, power |
 
-Build order from here: display → touch → sensor → main screen → menu → alerts →
-cloud → power. Each step ends at something flashable and observable.
+Build order: display → sensor → touch → main screen → menu → alerts → cloud →
+power. Each step ends at something flashable and observable. (Sensor jumped
+ahead of touch — with the part wired up, confirming it reads correctly was worth
+more than an input device nothing yet listens to.)
 
 ### Open questions
 

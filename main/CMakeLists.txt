@@ -19,7 +19,9 @@ idf_component_register(
         spi_flash       # esp_flash_get_size
         esp_timer
         nvs_flash
+        board_i2c
         display
+        sensor
         storage
         settings
         alert
