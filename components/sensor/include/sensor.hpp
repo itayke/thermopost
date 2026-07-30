@@ -22,6 +22,21 @@ namespace thermopost::sensor {
 // never collide with a real measurement from a part that spans -40..+125 °C.
 constexpr int16_t kInvalidTempC100 = INT16_MIN;
 
+// How often the task samples, and so how fresh the number on screen is.
+//
+// Public rather than private because `recorder` has to tick faster than this to
+// fold every reading into its interval's min/max, and it derives its own period
+// from this one. Two constants in two files that must stay in a ratio, with
+// nothing enforcing it, is how the envelope quietly starts missing the spikes it
+// exists to catch — recorder.cpp static_asserts the relationship.
+//
+// Floored by the part, not by taste: at the configured 0.0625 °C resolution a
+// conversion takes 250 ms, so reading faster than that just re-reads the same
+// register. Raising it is free but buys nothing while the screen is on — the
+// MCP9808 converts continuously regardless of how often it is asked, and the
+// read itself is about a millisecond of CPU on a SoC that is awake anyway.
+constexpr uint32_t kSamplePeriodMs = 1000;
+
 struct Reading {
   int16_t  temp_c100;  // °C × 100; kInvalidTempC100 when !valid
   bool     valid;      // false before the first sample and after a fault

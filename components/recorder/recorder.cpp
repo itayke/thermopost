@@ -29,12 +29,25 @@ constexpr size_t kRingCap = settings::kGraphPointsMax;
 // an hour to ten seconds takes up to an hour to apply, which reads as the setting
 // being broken.
 //
-// Faster than the sensor's own 1 Hz on purpose. The two are independent timers and
-// will drift against each other, so a tick of exactly one second would now and
-// then step over a sample entirely — and if that sample is the spike, min/max miss
-// the one thing they exist to catch. Four ticks per sample makes that impossible;
-// the duplicates are filtered by sequence number below.
-constexpr uint32_t kTickMs = 250;
+// Faster than the sensor on purpose, and *derived* from its period rather than
+// stated independently. The two are separate timers and will drift against each
+// other, so a tick equal to the sample period would now and then step over a
+// reading entirely — and if that reading is the spike, min/max miss the one thing
+// they exist to catch. Oversampling makes that impossible; the duplicates it
+// produces are filtered by sequence number in accumulate().
+//
+// Written as a ratio because the failure it prevents is silent: two hard-coded
+// periods in two components would still compile, still run, and only show up as an
+// envelope that occasionally flattens a spike it should have caught.
+constexpr uint32_t kTicksPerSample = 4;
+constexpr uint32_t kTickMs = sensor::kSamplePeriodMs / kTicksPerSample;
+static_assert(kTicksPerSample >= 2,
+              "the recorder must tick at least twice per sample, or drift between the "
+              "two timers lets a reading slip past the min/max envelope");
+static_assert(pdMS_TO_TICKS(kTickMs) >= 1,
+              "the tick rounds to zero FreeRTOS ticks, which turns the recorder task "
+              "into a busy loop — raise the sample period or CONFIG_FREERTOS_HZ");
+
 constexpr uint32_t kMsPerSec = 1000;
 constexpr int64_t  kUsPerSec = 1'000'000;
 

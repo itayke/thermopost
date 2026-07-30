@@ -47,9 +47,8 @@ constexpr int32_t kC100PerTickDen = 4;
 
 constexpr int kI2cTimeoutMs = 100;
 
-// How fresh the number on screen is. See the note in sensor.hpp for why this is
-// not settings::interval_s.
-constexpr uint32_t kSamplePeriodMs = 1000;
+// kSamplePeriodMs lives in sensor.hpp, not here: `recorder` derives its own tick
+// from it, and a private copy is exactly how the two would drift apart.
 
 // Consecutive failed reads before the reading is declared invalid. One miss is
 // a bumped lead or a NACK; three in a row at a second apart is a real fault,
