@@ -1,5 +1,9 @@
 #include "touch.hpp"
 
+#include <cinttypes>
+
+#include "sdkconfig.h"
+
 #include "board_i2c.hpp"
 #include "board_pins.hpp"
 #include "display.hpp"
@@ -38,6 +42,22 @@ constexpr bool kSwapXy   = true;
 constexpr bool kMirrorX  = true;
 constexpr bool kMirrorY  = false;
 
+// --- Offset -----------------------------------------------------------------
+// A constant nudge applied to every reported point, in screen coordinates, after
+// the transform above. Taps land a little below where they are aimed, and two
+// causes push the same way: the touch glass is bonded over the LCD with a small
+// vertical offset, and a fingertip's contact patch — which is what the controller
+// reports — sits below the spot the user believes they are pointing at.
+//
+// A constant, not a scale factor, because that is the shape of both causes. The
+// mapping itself is a clean inclusive 0..239 to 0..239, so there is no gain error
+// to correct; if the miss ever grows towards one edge the fault is in the driver's
+// x_max/y_max instead, and an offset would only hide it near the middle.
+// THERMOPOST_TOUCH_LOG is how to tell those apart — tap near the top and near the
+// bottom and compare.
+constexpr int32_t kOffsetX = CONFIG_THERMOPOST_TOUCH_OFFSET_X;
+constexpr int32_t kOffsetY = CONFIG_THERMOPOST_TOUCH_OFFSET_Y;
+
 // Reset is active low on the FT6x36 family.
 constexpr unsigned kResetActiveLevel = 0;
 
@@ -55,6 +75,24 @@ int32_t clamp(int32_t v, int32_t hi) {
   return v;
 }
 
+// Raw controller reading beside the mapped screen point, for dialling the offset in
+// by measurement instead of by feel: tap a known target and read the difference.
+// Only on the press edge, so a held finger logs once rather than at LVGL's read
+// rate. Compiles away entirely — including its edge detector — when the option is
+// off, which is why the state lives in here rather than beside s_last.
+#if CONFIG_THERMOPOST_TOUCH_LOG
+void log_touch(const esp_lcd_touch_point_data_t& raw, lv_point_t mapped, bool pressed) {
+  static bool was_pressed = false;
+  if (pressed && !was_pressed) {
+    ESP_LOGI(kTag, "touch raw (%d,%d) -> screen (%" PRId32 ",%" PRId32 ")",
+             static_cast<int>(raw.x), static_cast<int>(raw.y), mapped.x, mapped.y);
+  }
+  was_pressed = pressed;
+}
+#else
+inline void log_touch(const esp_lcd_touch_point_data_t&, lv_point_t, bool) {}
+#endif
+
 // Called by LVGL from its own task, which already holds the LVGL lock.
 void read_cb(lv_indev_t*, lv_indev_data_t* data) {
   esp_lcd_touch_point_data_t point = {};
@@ -64,16 +102,18 @@ void read_cb(lv_indev_t*, lv_indev_data_t* data) {
   esp_lcd_touch_get_data(s_touch, &point, &points, 1);
 
   if (points > 0) {
-    // Clamp rather than trust: the mirror above is `x_max - x`, which overshoots
-    // by one at the origin edge, and a controller reporting outside its
-    // configured range would otherwise put LVGL's pointer off-screen.
-    s_last.x = clamp(point.x, board::kLcdHRes - 1);
-    s_last.y = clamp(point.y, board::kLcdVRes - 1);
+    // Clamp after the offset, not before: a correction applied near an edge would
+    // otherwise push the point outside the panel. Clamping rather than trusting
+    // also covers the mirror above, which is `x_max - x` and overshoots by one at
+    // the origin edge, and a controller reporting outside its configured range.
+    s_last.x = clamp(point.x + kOffsetX, board::kLcdHRes - 1);
+    s_last.y = clamp(point.y + kOffsetY, board::kLcdVRes - 1);
     data->state = LV_INDEV_STATE_PRESSED;
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
   }
   data->point = s_last;
+  log_touch(point, s_last, points > 0);
 
   // When power/ lands, this is where an input that only wakes the screen gets
   // consumed rather than delivered — see the plan's note on power::consume_input().
@@ -160,8 +200,10 @@ esp_err_t init() {
   lv_indev_set_display(s_indev, display::lvgl_display());
   display::unlock();
 
-  ESP_LOGI(kTag, "FT6336 ready at 0x%02X (swap_xy=%d mirror_x=%d mirror_y=%d)",
-           board::kTouchI2cAddr, kSwapXy, kMirrorX, kMirrorY);
+  ESP_LOGI(kTag, "FT6336 ready at 0x%02X (swap_xy=%d mirror_x=%d mirror_y=%d, "
+                 "offset %+ld%+ld)",
+           board::kTouchI2cAddr, kSwapXy, kMirrorX, kMirrorY,
+           static_cast<long>(kOffsetX), static_cast<long>(kOffsetY));
   return ESP_OK;
 }
 

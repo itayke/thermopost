@@ -14,4 +14,42 @@ config THERMOPOST_RUN_BRINGUP_PROBE
         defaults so its checks start from a known state. It also parks the boot
         forever if any check fails, so the app will not come up.
 
+config THERMOPOST_TOUCH_OFFSET_X
+    int "Touch X offset, in pixels"
+    default 0
+    range -40 40
+    help
+        Added to every reported touch X, in screen coordinates, after the
+        controller's swap/mirror transform. Positive moves the reported point
+        right.
+
+config THERMOPOST_TOUCH_OFFSET_Y
+    int "Touch Y offset, in pixels"
+    default -6
+    range -40 40
+    help
+        Added to every reported touch Y, in screen coordinates, after the
+        controller's swap/mirror transform. Positive moves the reported point
+        DOWN the screen; negative moves it UP.
+
+        Defaults to -6 because taps register slightly below where they are aimed.
+        Two things cause that and both push the same way: the touch glass is
+        bonded over the LCD with a small vertical offset, and a fingertip's
+        contact patch sits below the point the user believes they are pointing
+        at.
+
+        Dial it in with THERMOPOST_TOUCH_LOG rather than by feel. If the error
+        is roughly the same at the top and the bottom of the screen it is an
+        offset and this fixes it; if it grows towards one edge the problem is a
+        scale mismatch in the touch config's x_max/y_max instead, and this would
+        only hide it in the middle.
+
+config THERMOPOST_TOUCH_LOG
+    bool "Log every touch point"
+    default n
+    help
+        Logs the raw controller reading and the adjusted screen coordinate on
+        every press, so a known target can be tapped and the difference read off.
+        Presses are human-paced, so this costs nothing while it is on.
+
 endmenu

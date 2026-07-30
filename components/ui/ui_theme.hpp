@@ -48,6 +48,11 @@ constexpr lv_color_t kColorOk    = color(0x3FD07F);
 // two devices' menu affordance reads the same.
 constexpr lv_color_t kColorMenu = color(0xC88036);
 
+// The stepper discs' amber, which happens to be the same one today. Its own name
+// rather than a reuse of kColorMenu so restyling the editors' controls doesn't drag
+// the navigation chrome along with it — the two are unrelated decisions.
+constexpr lv_color_t kColorStepper = kColorMenu;
+
 // --- Layout: 320x240 landscape ---------------------------------------------
 // Taken from the display's own resolution rather than restated, so a rotation
 // change cannot leave the layout silently disagreeing with the panel.
@@ -61,6 +66,7 @@ constexpr int32_t kEdgePad = 8;
 // status strip, which looks like a stray widget rather than an arithmetic error.
 // ui::init() checks these against the linked fonts at boot.
 constexpr int32_t kFont14H = 16;
+constexpr int32_t kFont24H = 27;
 constexpr int32_t kFont48H = 52;
 
 // Rows, top to bottom: readout, chart, time captions, status strip. Everything is
@@ -98,5 +104,54 @@ constexpr int32_t kPlotH = kChartH - 2 * kChartBorderPx;
 
 static_assert(kChartH > 0, "layout bands do not fit the panel height");
 static_assert(kStatusY + kStatusH + kEdgePad <= kScreenH, "status strip overflows");
+
+// --- Shared chrome ----------------------------------------------------------
+// Every tappable thing in this UI is an outlined capsule — no fills, so nothing
+// competes with the graph for attention, and the outline reads as a target at a
+// glance without needing a shadow.
+constexpr int32_t kPillStroke = 2;
+
+// The smallest a control may be to a finger. The drawn outline is allowed to be
+// smaller — lv_obj_set_ext_click_area grows the hit area without touching the
+// chrome — but nothing should ask for more precision than this. A fingertip covers
+// roughly this much, and the contact patch is not where the user thinks they are
+// pointing (see the offset in touch.cpp).
+constexpr int32_t kMinTouchPx = 48;
+
+// How far a control's hit area must reach past its outline to meet kMinTouchPx.
+// Driven by the smaller dimension, because ext_click_area is a single value applied
+// to all four sides.
+//
+// Zero for anything already large enough, and that matters more than it looks: a
+// blanket margin makes adjacent cells in a grid overlap, and the gutter between them
+// then belongs to whichever was built last rather than to neither. The menu's entry
+// pills sit 12 px apart, so any margin at all put their hit areas on top of each
+// other — at 146x52 they are well past the minimum and need none.
+constexpr int32_t ext_click_for(int32_t w, int32_t h) {
+  const int32_t smaller = w < h ? w : h;
+  return smaller >= kMinTouchPx ? 0 : (kMinTouchPx - smaller + 1) / 2;
+}
+
+// The navigation pill lives in the top-left corner of *every* screen: a burger and
+// "Menu" on the main screen, a chevron and "Back" on the rest. Same corner, same
+// size, so the way out never has to be looked for.
+constexpr int32_t kNavPillW = 78;
+constexpr int32_t kNavPillH = 25;
+// The pill sits slightly below the band's top edge so it reads as optically level
+// with the readout's digits, whose glyphs start below their own line box. Shared by
+// the pill and the main screen's threshold chips so the two columns can't drift.
+constexpr int32_t kTopRowNudge = 2;
+constexpr int32_t kNavPillY = kTopPad + kTopRowNudge;
+constexpr int32_t kNavRowGap = 6;  // between the pill's glyph and its label
+
+// A screen's heading centres in the band to the right of the nav pill, not on the
+// screen — a title long enough to be worth ellipsising would otherwise run under
+// the pill, where the truncation happens off-centre and looks like a bug.
+constexpr int32_t kHeadingY  = kTopPad;
+constexpr int32_t kHeadingW  = kScreenW - 2 * (kEdgePad + kNavPillW);
+constexpr int32_t kHeadingCx = kEdgePad + kNavPillW + kHeadingW / 2;
+constexpr int32_t kHeadingDx = kHeadingCx - kScreenW / 2;
+static_assert(kHeadingCx - kHeadingW / 2 >= kEdgePad + kNavPillW,
+              "a centred heading would overlap the nav pill");
 
 }  // namespace thermopost::ui

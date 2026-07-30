@@ -178,7 +178,8 @@ nothing else.
 The clock sits under the menu glyph and reads `no clock` until SNTP lands —
 showing a 1970 timestamp would be a bug report rather than a fact. The phrase is
 short because at Montserrat 14 the accurate one, "clock not set", is wide enough
-to reach under the centred readout; the menu will have room to say it properly.
+to reach under the centred readout; the menu screen has the room and says it in
+full.
 
 The status strip has two rows: the post's name, and three record counters that
 answer three different questions.
@@ -209,11 +210,14 @@ without a reboot.
 
 The menu pill is espressopost's, scaled for a 320 px screen: an amber outlined
 capsule holding a hamburger glyph and the word *Menu* in a centred flex row.
-Outline, label and glyph all tint green under a finger, and the tap is logged, but
-it has nowhere to go until M6. The glyph is painted as three 1 px bars rather than
-set as `LV_SYMBOL_BARS`, which the built-in font does carry — espressopost's
-reasoning applies here too: a painted glyph tints and scales with the layout
-instead of being pinned to whatever the font designer chose.
+Outline, label and glyph all tint green under a finger. The glyph is painted as
+three 1 px bars rather than set as `LV_SYMBOL_BARS`, which the built-in font does
+carry — espressopost's reasoning applies here too: a painted glyph tints and scales
+with the layout instead of being pinned to whatever the font designer chose.
+
+**The same pill is in the top-left corner of every screen**, showing a left
+chevron and *Back* everywhere but here. Same corner, same size, so the way out
+never has to be looked for.
 
 Because the pill holds a word as well as a glyph, the readout is centred in the
 gap *between* the side columns rather than on the screen. That is nine pixels off
@@ -227,6 +231,79 @@ origin corners. Dragging settled them — the horizontal axis was already correc
 and the vertical inverted, which is `mirror_x`, because the mirrors act in the
 controller's frame that `swap_xy` then transposes. The two targets now sit in
 opposite corners, which is a stricter check than one dot ever was.
+
+### The menu and the settings screens
+
+Tapping *Menu* cross-fades to the hub. Its heading is **the post's name**, not the
+word "MENU" — in a rack of identical boxes, the useful thing to say at the top of a
+settings screen is which box this is, and the chevron in the corner already says
+what the screen is for. Under it sit four pages and a line carrying the full date,
+the time and the total record count.
+
+```
+ (‹ Back)          North Tank
+              rename from the setup page
+   ┌────────────────┐ ┌────────────────┐
+   │   Thresholds   │ │   Recording    │
+   └────────────────┘ └────────────────┘
+   ┌────────────────┐ ┌────────────────┐
+   │     Sound      │ │    Display     │
+   └────────────────┘ └────────────────┘
+          Tue 28 Jul   14:32   4213 records
+```
+
+| page | controls | footer says |
+|---|---|---|
+| Thresholds | alarm below, alarm above, recovery margin | the exact stored hundredths |
+| Recording | interval, points plotted | the time span the graph covers |
+| Sound | alarm sound on/off, volume | whether alarms will be audible |
+| Display | temperature unit | that tapping the reading does this too |
+
+Every value is edited with espressopost's stepper — a caption, and `(-) value (+)`
+with two outline discs either side. It earns its place on a 2.8" panel because it is
+unmissable, needs no drag precision, and has no hit target smaller than a fingertip.
+Five things changed in the port, each forced by the data: the value is an `int16_t`
+(the range is −40…125 °C, signed and wider than a byte in °F), the suffix is a
+`const char*` (`"°C"` is three bytes, not a char), the step is explicit, the
+`"--"`-until-touched gate is gone (a threshold always has a value, so the gate could
+only add a state that cannot happen), and the bounds are re-derived rather than fixed.
+
+**The bounds are the interesting part.** The two thresholds are coupled: `(+)` on the
+minimum simply stops below the maximum, rather than letting the pair cross and having
+`alert::sanitize()` quietly rewrite the input afterwards. A control that accepts a tap
+and *then* changes the number is worse than one that doesn't move. The recovery margin
+is coupled to both, because `sanitize()` caps it at half the band — so narrowing the
+band lowers that stepper's ceiling, and the new value is written rather than left on
+screen as a number the alarm logic has stopped using.
+
+Two consequences of stepping in whole degrees, both deliberate:
+
+- The **stored value stays hundredths of a °C**. Each tap converts the displayed
+  integer back, which keeps the standing promise that °F exists only at the point of
+  display. A band set in °F therefore isn't a round number of °C — correct behaviour,
+  not drift, and the footer prints the stored value so it is visible rather than
+  mysterious.
+- A stepper writes **only its own field**, taking its sibling from what is stored. A
+  stored 20.5 °C minimum displays as 21, and writing that back while the user was
+  only touching the maximum would move a threshold they never touched.
+
+The interval stepper walks a table — 10 s, 15 s, 30 s, 1 m, 2 m, 5 m, 10 m, 15 m,
+30 m, 1 h — instead of counting seconds. Ten taps covers the whole range; any fixed
+step over 10…3600 s is either hundreds of taps or too coarse to reach the fast end.
+
+Screens cross-fade rather than cut, using espressopost's two-phase engine: fade the
+outgoing widgets out, swap in one frame at the midpoint, fade the incoming ones in.
+Two details carried over because both were learned the hard way there — each widget
+gets its own opacity animation instead of one on the container (fading a container
+redraws the empty space between the widgets every frame), and a no-op animation owns
+the phase clock so a phase ends after exactly one fade duration however many widgets
+took part. A transparent click-eater covers the screen for the swap's duration, so a
+stray tap can't land on a page that is already half gone.
+
+Each page re-reads its values at the midpoint, while it is still hidden. That is what
+will keep a page opened after the web form (M8) wrote the same setting from showing —
+and then clobbering — a stale number. Both paths go through the same
+`settings::set_*` setters, so NVS stays the single source of truth.
 
 ### The post's name
 
@@ -313,7 +390,7 @@ the code is. Push the IDF dependency into the `alert.cpp` wrapper instead.
 │   ├── sensor/             MCP9808 driver + 1 Hz sampling task
 │   ├── touch/              FT6336 capacitive touch as an LVGL indev
 │   ├── recorder/           the one log writer + the graph's RAM ring
-│   ├── ui/                 theme + the main screen
+│   ├── ui/                 theme, shared chrome, screen fade engine, the screens
 │   ├── storage/            LittleFS append-log + rotation with stable absolute indices
 │   ├── settings/           NVS-backed name / interval / band / units / sound
 │   └── alert/              alarm decision logic (IDF-free, host-tested)
@@ -363,7 +440,8 @@ returns.
 | ✅ Verified | `board_i2c` + `sensor` — MCP9808 found by manufacturer ID, sampled at 1 Hz, shown on screen |
 | ✅ Built | `touch` — FT6336 via the FT5x06 driver, registered as an LVGL pointer indev |
 | ✅ Built | `recorder` + `ui` — one record per interval, graph backfilled from the log on boot, main screen with readout / chart / status strip |
-| ⬜️ Not started | menu + editors, alerts, cloud + config service, power |
+| ✅ Built | menu hub + four settings pages, ported stepper with coupled bounds, cross-fade between screens |
+| ⬜️ Not started | alerts, cloud + config service, power |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
 power. Each step ends at something flashable and observable. (Sensor jumped
@@ -399,3 +477,8 @@ state machine and M9's RTC-memory mirror an obvious place to attach.
   of needing a tank. It follows that a device sitting on a desk will alarm, which is
   the intent of these numbers rather than a bug; 15–30 °C is the sane generic band
   to go back to once the alarms are proven.
+- **Time zone.** The displayed clock renders in a compile-time POSIX zone string in
+  [`ui_chrome.cpp`](components/ui/ui_chrome.cpp) — currently espressopost's, since
+  the two share a bench. It belongs in `settings` once the config form (M8) can
+  carry it; until then relocating a post is a one-string change. Nothing stored is
+  affected either way: every record carries UTC.

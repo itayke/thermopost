@@ -30,6 +30,29 @@ constexpr const char* kKeyName     = "nm";
 constexpr unsigned char kAsciiFirst = 0x20;
 constexpr unsigned char kAsciiLast  = 0x7E;
 
+// --- Unit arithmetic, named rather than inlined ------------------------------
+// °F = °C · 9/5 + 32. Spelled out as a fraction and an offset so the conversion
+// reads as the formula it is, and so the span variants can borrow the fraction
+// without the offset.
+constexpr int32_t kC100PerDeg  = 100;
+constexpr int32_t kFNum        = 9;     // Fahrenheit degrees per Celsius degree
+constexpr int32_t kFDen        = 5;
+constexpr int32_t kFOffsetC100 = 3200;  // 32.00 °F is 0 °C
+
+// Rounds to nearest for both signs. Integer division truncates towards zero,
+// which would read -20.6 °C back as -20 while reading 20.6 as 21 — an asymmetry
+// that shows up as a threshold that shifts when it crosses freezing.
+constexpr int32_t div_round(int32_t num, int32_t den) {
+  const int32_t half = den / 2;
+  return num >= 0 ? (num + half) / den : (num - half) / den;
+}
+
+// Every conversion below is bounded by the sensor's own range, so this is a
+// backstop for a corrupt stored value rather than an expected path.
+constexpr int16_t clamp16(int32_t v) {
+  return static_cast<int16_t>(std::clamp<int32_t>(v, INT16_MIN, INT16_MAX));
+}
+
 bool s_inited = false;
 
 // The name initialiser is a literal rather than the MAC-derived default because
@@ -123,7 +146,7 @@ bool sanitize_name(const char* src, char* out, size_t out_size) {
 uint16_t clamp_interval(uint16_t v) { return std::clamp(v, kIntervalMinS, kIntervalMaxS); }
 uint16_t clamp_points(uint16_t v)   { return std::clamp(v, kGraphPointsMin, kGraphPointsMax); }
 int16_t  clamp_temp(int16_t v)      { return std::clamp(v, kTempFloorC100, kTempCeilC100); }
-uint8_t  clamp_volume(uint8_t v)    { return v > 100 ? 100 : v; }
+uint8_t  clamp_volume(uint8_t v)    { return v > kVolumeMaxPct ? kVolumeMaxPct : v; }
 
 // Hysteresis is bounded here only against nonsense; alert::sanitize() applies
 // the real "must be able to recover" cap against the live band, because that
@@ -313,6 +336,34 @@ float display_value(int16_t c100) {
 
 const char* unit_suffix() {
   return s_cur.unit == TempUnit::Celsius ? "°C" : "°F";
+}
+
+int16_t display_deg(int16_t c100) {
+  if (s_cur.unit == TempUnit::Celsius) return clamp16(div_round(c100, kC100PerDeg));
+  // (c100·9/5 + 3200) / 100, folded into one division so the scale factor and the
+  // degree rounding don't each round separately and compound.
+  return clamp16(div_round(static_cast<int32_t>(c100) * kFNum + kFOffsetC100 * kFDen,
+                           kC100PerDeg * kFDen));
+}
+
+int16_t c100_from_deg(int16_t deg) {
+  const int32_t c100 =
+      s_cur.unit == TempUnit::Celsius
+          ? static_cast<int32_t>(deg) * kC100PerDeg
+          : div_round((static_cast<int32_t>(deg) * kC100PerDeg - kFOffsetC100) * kFDen,
+                      kFNum);
+  return static_cast<int16_t>(std::clamp<int32_t>(c100, kTempFloorC100, kTempCeilC100));
+}
+
+int16_t display_span_deg(int16_t c100) {
+  if (s_cur.unit == TempUnit::Celsius) return clamp16(div_round(c100, kC100PerDeg));
+  // No +32: an offset belongs to a point on the scale, not to a distance along it.
+  return clamp16(div_round(static_cast<int32_t>(c100) * kFNum, kC100PerDeg * kFDen));
+}
+
+int16_t c100_from_span_deg(int16_t deg) {
+  if (s_cur.unit == TempUnit::Celsius) return clamp16(static_cast<int32_t>(deg) * kC100PerDeg);
+  return clamp16(div_round(static_cast<int32_t>(deg) * kC100PerDeg * kFDen, kFNum));
 }
 
 }  // namespace thermopost::settings

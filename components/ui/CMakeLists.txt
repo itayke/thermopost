@@ -1,6 +1,11 @@
 idf_component_register(
     SRCS
         "ui_main.cpp"
+        "ui_chrome.cpp"
+        "ui_nav.cpp"
+        "ui_stepper.cpp"
+        "ui_menu.cpp"
+        "ui_settings.cpp"
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS

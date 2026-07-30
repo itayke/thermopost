@@ -53,6 +53,9 @@ constexpr int16_t kMinDefaultC100 = 2000;  // 20.00 °C
 constexpr int16_t kMaxDefaultC100 = 2500;  // 25.00 °C
 constexpr int16_t kHysteresisDefaultC100 = 50;  // 0.50 °C
 
+// Full scale, named so the setter's clamp and the menu's stepper bound are the same
+// number rather than two independent hundreds.
+constexpr uint8_t kVolumeMaxPct = 100;
 constexpr uint8_t kVolumeDefaultPct = 70;
 
 // --- Post name -------------------------------------------------------------
@@ -137,5 +140,23 @@ inline float c100_to_c(int16_t c100) { return static_cast<float>(c100) / 100.0f;
 // readout, the threshold chips and the graph axis).
 float display_value(int16_t c100);
 const char* unit_suffix();
+
+// --- Whole-degree editing, for the menu's steppers --------------------------
+// A stepper shows and steps whole degrees in the active unit while the stored
+// value stays hundredths of a °C; these are that round trip. They live here for
+// the same reason display_value() does — the unit setting is not allowed to leak
+// out of this component.
+//
+// A point on the scale and a span along it convert differently: 20 °C is 68 °F,
+// but a span of 20 °C is a span of 36 °F. Feeding a hysteresis through the
+// absolute pair would put it 32 degrees out, i.e. an alarm that can never clear,
+// so the two are separate functions rather than one with a flag.
+//
+// Both directions round to nearest, so a value edited in °F and read back in °C
+// lands on the nearest whole degree rather than drifting down by one each trip.
+int16_t display_deg(int16_t c100);
+int16_t c100_from_deg(int16_t deg);
+int16_t display_span_deg(int16_t c100);
+int16_t c100_from_span_deg(int16_t deg);
 
 }  // namespace thermopost::settings

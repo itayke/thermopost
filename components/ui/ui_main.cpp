@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
-#include <ctime>
 
 #include "alert_logic.hpp"
 #include "display.hpp"
@@ -11,6 +10,10 @@
 #include "recorder.hpp"
 #include "sensor.hpp"
 #include "settings.hpp"
+#include "ui_chrome.hpp"
+#include "ui_menu.hpp"
+#include "ui_nav.hpp"
+#include "ui_settings.hpp"
 #include "ui_theme.hpp"
 
 namespace thermopost::ui {
@@ -31,44 +34,21 @@ constexpr size_t kTextMax = 64;
 constexpr size_t kClockTextMax = 16;
 constexpr const char* kNoValue = "--.-";
 
-// Short on purpose. "clock not set" is the accurate phrase and it is what the menu
-// will say, but at Montserrat 14 it is wide enough to reach under a centred 48 px
-// readout — and a status line that collides with the number it sits beside is
-// worse than a terser one.
+// Short on purpose. "clock not set" is the fuller phrase, and it is what the menu
+// says because it has the width — but at Montserrat 14 it reaches under a centred
+// 48 px readout, and a status line that collides with the number beside it is worse
+// than a terser one.
 constexpr const char* kNoClock = "no clock";
 
-// --- Top band: menu pill + clock (left) -------------------------------------
-// An outlined capsule holding a hamburger glyph and the word "Menu", ported from
-// espressopost's menu pill so the affordance reads identically on both devices.
-// Scaled down for a 320 px screen: its label is Montserrat 14 rather than 24.
-constexpr int32_t kMenuBtnW = 78;
-constexpr int32_t kMenuBtnH = 25;
-// The pill and the chips both sit slightly below the band's top edge so they read
-// as optically level with the readout's digits, whose glyphs start below their own
-// line box. One knob, shared by both columns, so they can't drift apart.
-constexpr int32_t kTopRowNudge = 2;
-constexpr int32_t kMenuBtnY = kTopPad + kTopRowNudge;
-constexpr int32_t kMenuBtnStroke = 2;
-constexpr int32_t kMenuBtnExtClick = 10;  // hit area grows; the outline does not
-constexpr int32_t kMenuRowGap = 6;        // between the glyph and the label
-
-// Hand-drawn rather than LV_SYMBOL_BARS, which the built-in font does carry.
-// espressopost's reason holds here: a painted glyph tints and scales exactly with
-// the layout instead of being pinned to whatever the font designer chose, and it
-// matches the house style of its other custom glyphs.
-constexpr int32_t kBurgerW    = 14;  // bar length
-constexpr int32_t kBurgerH    = 16;  // glyph box
-constexpr int32_t kBurgerBarH = 1;   // bar thickness; thinner than espressopost's 3
-constexpr int32_t kBurgerGap  = 4;   // centre-to-centre spacing
-constexpr int32_t kBurgerRows = 3;
-static_assert((kBurgerRows - 1) * kBurgerGap + kBurgerBarH <= kBurgerH,
-              "hamburger bars overflow their glyph box");
-
+// --- Top band: clock under the nav pill (left) -------------------------------
+// The pill itself is shared chrome now (ui_chrome.hpp) — every screen puts one in
+// this corner, and a second copy of its geometry here is how the two would drift.
+//
 // Derived from the pill's own origin and height, never from kTopPad again: the
 // clock has to follow the pill when the pill moves, and recomputing the same sum
 // is exactly how the two came apart the first time.
 constexpr int32_t kClockGap = 3;
-constexpr int32_t kClockY = kMenuBtnY + kMenuBtnH + kClockGap;
+constexpr int32_t kClockY = kNavPillY + kNavPillH + kClockGap;
 // Wide enough for kNoClock and no wider, so a long value can never grow into the
 // readout's space.
 constexpr int32_t kClockW = 64;
@@ -95,7 +75,7 @@ static_assert(kChipArrowX > kScreenW / 2, "threshold chips reach past the centre
 // widest value the sensor can produce (-40.0 °F) cannot reach under the menu pill
 // or the chips, which a screen-centred label would once the pill grew to hold a
 // word as well as a glyph.
-constexpr int32_t kReadoutCx = (kEdgePad + kMenuBtnW + kChipArrowX) / 2;
+constexpr int32_t kReadoutCx = (kEdgePad + kNavPillW + kChipArrowX) / 2;
 constexpr int32_t kReadoutDx = kReadoutCx - kScreenW / 2;
 
 // The unit rides after the digits at the small text size, in a flex row so the pair
@@ -139,10 +119,9 @@ constexpr int32_t kRangeMarginC100 = 50;   // 0.5 °C of headroom above and belo
 constexpr int32_t kRangeMinSpanC100 = 200; // 2 °C — a dead-flat trace shouldn't
                                            // fill the plot and read as noise
 
-// Below this the system clock has never been set (see storage.hpp on epoch_s).
-// Duplicated from recorder.cpp deliberately for now; when M8's cloud component
-// lands it owns SNTP and both of these collapse into one predicate there.
-constexpr std::time_t kEpochValidFrom = 1'700'000'000;
+// Just the hour and minute: the column under the pill is 64 px wide, and the date
+// is on the menu screen, which has the room for it.
+constexpr const char* kClockFmt = "%H:%M";
 
 constexpr uint32_t kSecPerMin  = 60;
 constexpr uint32_t kSecPerHour = 3600;
@@ -150,28 +129,27 @@ constexpr uint32_t kSecPerHour = 3600;
 lv_obj_t* s_readout_row = nullptr;
 lv_obj_t* s_value_lbl   = nullptr;
 lv_obj_t* s_unit_lbl    = nullptr;
+lv_obj_t* s_max_arrow   = nullptr;
 lv_obj_t* s_max_num     = nullptr;
+lv_obj_t* s_min_arrow   = nullptr;
 lv_obj_t* s_min_num     = nullptr;
 lv_obj_t* s_chart       = nullptr;
 lv_obj_t* s_max_line    = nullptr;
 lv_obj_t* s_min_line    = nullptr;
 lv_obj_t* s_axis_left   = nullptr;
 lv_obj_t* s_axis_mid    = nullptr;
+lv_obj_t* s_axis_right  = nullptr;
 lv_obj_t* s_name_lbl    = nullptr;
 lv_obj_t* s_counter_lbl = nullptr;
 lv_obj_t* s_clock_lbl   = nullptr;
-lv_obj_t* s_menu_btn    = nullptr;
-lv_obj_t* s_menu_glyph  = nullptr;
-lv_obj_t* s_menu_lbl    = nullptr;
+lv_obj_t* s_group       = nullptr;
+NavPill   s_nav         = {};
 // Mean plus the min/max envelope. Three series rather than one because a record is
 // an aggregate of sixty readings — plotting only the mean would smooth away the
 // short excursions the device exists to catch.
 lv_chart_series_t* s_mean_series = nullptr;
 lv_chart_series_t* s_min_series = nullptr;
 lv_chart_series_t* s_max_series = nullptr;
-
-// The painter reads this, so the glyph tints with the rest of the pill.
-bool s_menu_pressed = false;
 
 // Threshold lines are positioned by moving the object, not by rewriting its
 // points — a horizontal line at local y=0 keeps lv_line's self-sizing out of it.
@@ -223,19 +201,6 @@ void format_span(char* out, size_t n, uint32_t seconds) {
   } else {
     std::snprintf(out, n, "-%lus", static_cast<unsigned long>(seconds));
   }
-}
-
-// Local time, or an honest admission. Showing a 1970 timestamp would be worse
-// than saying the clock isn't set — one is a bug report, the other is a fact.
-void format_clock(char* out, size_t n) {
-  const std::time_t now = std::time(nullptr);
-  if (now < kEpochValidFrom) {
-    std::snprintf(out, n, "%s", kNoClock);
-    return;
-  }
-  std::tm tm = {};
-  localtime_r(&now, &tm);
-  std::snprintf(out, n, "%02d:%02d", tm.tm_hour, tm.tm_min);
 }
 
 // --- chart -----------------------------------------------------------------
@@ -310,7 +275,17 @@ void rebuild_chart(const settings::Settings& s, const alert::Thresholds& t) {
 // unsupported conversion then falls through WITHOUT consuming its double — every
 // later argument is read from the wrong offset and a trailing %s dies in
 // lv_strnlen. Silent, and it only fires on format strings carrying a float.
-void refresh(lv_timer_t*) {
+void refresh(lv_timer_t* timer) {
+  // Skipped while a menu page is up. Not an optimisation for its own sake: the
+  // chart rebuild walks 480 samples across four arrays, and doing that four times a
+  // second for a screen nobody can see is work taken from the LVGL task that is
+  // animating the transition. nav::register_screen's on_show repaints on the way
+  // back in, so nothing is stale when it returns.
+  //
+  // The nullptr call is the direct one — from init() and from that on_show hook —
+  // and it always paints.
+  if (timer != nullptr && !nav::visible(nav::Screen::Main)) return;
+
   const settings::Settings s = settings::get();
   const alert::Thresholds t = settings::thresholds();
   const sensor::Reading r = sensor::latest();
@@ -343,7 +318,9 @@ void refresh(lv_timer_t*) {
 
   // --- clock, under the menu glyph
   char clock[kClockTextMax];
-  format_clock(clock, sizeof(clock));
+  if (!format_clock(clock, sizeof(clock), kClockFmt)) {
+    std::snprintf(clock, sizeof(clock), "%s", kNoClock);
+  }
   lv_label_set_text(s_clock_lbl, clock);
 
   // --- status strip
@@ -388,72 +365,15 @@ void value_clicked(lv_event_t*) {
   ESP_LOGI(kTag, "unit -> %s", settings::unit_suffix());
 }
 
-void draw_burger(lv_event_t* e) {
-  lv_layer_t* layer = lv_event_get_layer(e);
-  if (layer == nullptr) return;
-  lv_obj_t* obj = static_cast<lv_obj_t*>(lv_event_get_target(e));
-
-  lv_area_t coords;
-  lv_obj_get_coords(obj, &coords);
-  const int32_t cx = coords.x1 + lv_area_get_width(&coords) / 2;
-  const int32_t cy = coords.y1 + lv_area_get_height(&coords) / 2;
-
-  lv_draw_rect_dsc_t d;
-  lv_draw_rect_dsc_init(&d);
-  d.bg_color = s_menu_pressed ? kColorOk : kColorMenu;
-  d.bg_opa = LV_OPA_COVER;
-  d.radius = kBurgerBarH / 2;
-
-  const int32_t half_w = kBurgerW / 2;
-  const int32_t half_h = kBurgerBarH / 2;
-  for (int32_t row = -(kBurgerRows / 2); row <= kBurgerRows / 2; ++row) {
-    const int32_t yc = cy + row * kBurgerGap;
-    lv_area_t a = {cx - half_w, yc - half_h, cx + half_w, yc + half_h};
-    lv_draw_rect(layer, &d, &a);
-  }
-}
-
-// Outline, label and painted glyph tint together, so the whole pill responds
-// rather than one part of it.
-void set_menu_tint(lv_color_t c) {
-  lv_obj_set_style_border_color(s_menu_btn, c, LV_PART_MAIN);
-  lv_obj_set_style_text_color(s_menu_lbl, c, LV_PART_MAIN);
-  lv_obj_invalidate(s_menu_glyph);
-}
-
-void menu_pressed(lv_event_t*) {
-  s_menu_pressed = true;
-  set_menu_tint(kColorOk);
-  // M6 replaces this with the fade into the menu hub. Until then the tap is
-  // acknowledged visually as well as on serial, so the pill doubles as the touch
-  // check that the M2 probe screen used to be.
-  ESP_LOGI(kTag, "MENU tapped (no menu yet — M6)");
-}
-
-void menu_released(lv_event_t*) {
-  s_menu_pressed = false;
-  set_menu_tint(kColorMenu);
-}
+void menu_clicked(lv_event_t*) { nav::go(nav::Screen::Menu); }
 
 // --- construction ----------------------------------------------------------
 
-lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, lv_color_t color,
-                     const char* initial) {
-  lv_obj_t* l = lv_label_create(parent);
-  lv_obj_set_style_text_font(l, font, LV_PART_MAIN);
-  lv_obj_set_style_text_color(l, color, LV_PART_MAIN);
-  lv_label_set_text(l, initial);
-  return l;
-}
-
-// A fixed-width, centre-aligned label — the shape both threshold numbers and the
-// counter need so their content can change width without moving anything else.
-lv_obj_t* make_boxed_label(lv_obj_t* parent, lv_color_t color, int32_t w,
-                           lv_text_align_t align) {
-  lv_obj_t* l = make_label(parent, &lv_font_montserrat_14, color, "");
-  lv_obj_set_width(l, w);
-  lv_obj_set_style_text_align(l, align, LV_PART_MAIN);
-  return l;
+// Every boxed label on this screen is Montserrat 14 — the clock and the two
+// threshold numbers — so the font is bound once here rather than at each call.
+lv_obj_t* make_chip_label(lv_obj_t* parent, lv_color_t color, int32_t w,
+                          lv_text_align_t align) {
+  return make_boxed_label(parent, &lv_font_montserrat_14, color, w, align);
 }
 
 void build_chart(lv_obj_t* scr) {
@@ -504,55 +424,11 @@ void build_chart(lv_obj_t* scr) {
   lv_obj_set_style_line_color(s_min_line, kColorLow, LV_PART_MAIN);
 }
 
-// The outlined capsule: hamburger glyph + "Menu" in a centred flex row, exactly
-// the shape espressopost uses. The glyph is its own transparent widget with a
-// painter attached, so the row's flex layout measures it like any other child.
-void build_menu_pill(lv_obj_t* scr) {
-  s_menu_btn = lv_button_create(scr);
-  lv_obj_set_size(s_menu_btn, kMenuBtnW, kMenuBtnH);
-  lv_obj_set_style_radius(s_menu_btn, kMenuBtnH / 2, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_menu_btn, LV_OPA_TRANSP, LV_PART_MAIN);
-  lv_obj_set_style_shadow_width(s_menu_btn, 0, LV_PART_MAIN);
-  lv_obj_set_style_border_color(s_menu_btn, kColorMenu, LV_PART_MAIN);
-  lv_obj_set_style_border_width(s_menu_btn, kMenuBtnStroke, LV_PART_MAIN);
-  lv_obj_set_style_border_opa(s_menu_btn, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_set_ext_click_area(s_menu_btn, kMenuBtnExtClick);
-  lv_obj_set_pos(s_menu_btn, kEdgePad, kMenuBtnY);
-  lv_obj_add_event_cb(s_menu_btn, menu_pressed, LV_EVENT_PRESSED, nullptr);
-  lv_obj_add_event_cb(s_menu_btn, menu_released, LV_EVENT_RELEASED, nullptr);
-
-  lv_obj_t* row = lv_obj_create(s_menu_btn);
-  lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-  lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, LV_PART_MAIN);
-  lv_obj_set_style_border_width(row, 0, LV_PART_MAIN);
-  lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
-  lv_obj_set_style_pad_column(row, kMenuRowGap, LV_PART_MAIN);
-  lv_obj_set_layout(row, LV_LAYOUT_FLEX);
-  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER);
-  lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-
-  s_menu_glyph = lv_obj_create(row);
-  lv_obj_set_size(s_menu_glyph, kBurgerW, kBurgerH);
-  lv_obj_set_style_bg_opa(s_menu_glyph, LV_OPA_TRANSP, LV_PART_MAIN);
-  lv_obj_set_style_border_width(s_menu_glyph, 0, LV_PART_MAIN);
-  lv_obj_set_style_pad_all(s_menu_glyph, 0, LV_PART_MAIN);
-  lv_obj_remove_flag(s_menu_glyph, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_remove_flag(s_menu_glyph, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_event_cb(s_menu_glyph, draw_burger, LV_EVENT_DRAW_MAIN, nullptr);
-
-  s_menu_lbl = make_label(row, &lv_font_montserrat_14, kColorMenu, "Menu");
-
-  lv_obj_center(row);
-}
-
 void build_top_band(lv_obj_t* scr) {
-  build_menu_pill(scr);
+  build_nav_pill(scr, &s_nav, NavGlyph::Burger, "Menu", menu_clicked);
 
   // --- clock, directly under the pill
-  s_clock_lbl = make_boxed_label(scr, kColorMuted, kClockW, LV_TEXT_ALIGN_LEFT);
+  s_clock_lbl = make_chip_label(scr, kColorMuted, kClockW, LV_TEXT_ALIGN_LEFT);
   lv_label_set_long_mode(s_clock_lbl, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_pos(s_clock_lbl, kEdgePad, kClockY);
 
@@ -592,48 +468,64 @@ void build_top_band(lv_obj_t* scr) {
   lv_obj_align(s_readout_row, LV_ALIGN_TOP_MID, kReadoutDx, kReadoutY);
 
   // --- threshold chips, right. Arrows fixed, numbers centred beside them.
-  lv_obj_t* max_arrow =
-      make_label(scr, &lv_font_montserrat_14, kColorHigh, LV_SYMBOL_UP);
-  lv_obj_set_pos(max_arrow, kChipArrowX, kChipY);
-  s_max_num = make_boxed_label(scr, kColorHigh, kChipNumW, LV_TEXT_ALIGN_CENTER);
+  s_max_arrow = make_label(scr, &lv_font_montserrat_14, kColorHigh, LV_SYMBOL_UP);
+  lv_obj_set_pos(s_max_arrow, kChipArrowX, kChipY);
+  s_max_num = make_chip_label(scr, kColorHigh, kChipNumW, LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(s_max_num, kChipNumX, kChipY);
 
-  lv_obj_t* min_arrow =
-      make_label(scr, &lv_font_montserrat_14, kColorLow, LV_SYMBOL_DOWN);
-  lv_obj_set_pos(min_arrow, kChipArrowX, kChipY + kChipSpacing);
-  s_min_num = make_boxed_label(scr, kColorLow, kChipNumW, LV_TEXT_ALIGN_CENTER);
+  s_min_arrow = make_label(scr, &lv_font_montserrat_14, kColorLow, LV_SYMBOL_DOWN);
+  lv_obj_set_pos(s_min_arrow, kChipArrowX, kChipY + kChipSpacing);
+  s_min_num = make_chip_label(scr, kColorLow, kChipNumW, LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(s_min_num, kChipNumX, kChipY + kChipSpacing);
 }
 
-void build_screen() {
-  lv_obj_t* scr = lv_screen_active();
-  lv_obj_set_style_bg_color(scr, kColorBg, LV_PART_MAIN);
-  lv_obj_set_style_border_width(scr, 0, LV_PART_MAIN);
-  lv_obj_set_style_pad_all(scr, 0, LV_PART_MAIN);
-  lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+void build_screen(lv_obj_t* scr) {
+  s_group = build_group(scr);
 
-  build_top_band(scr);
-  build_chart(scr);
+  build_top_band(s_group);
+  build_chart(s_group);
 
   // --- time captions
-  s_axis_left = make_label(scr, &lv_font_montserrat_14, kColorMuted, "");
+  s_axis_left = make_label(s_group, &lv_font_montserrat_14, kColorMuted, "");
   lv_obj_set_pos(s_axis_left, kEdgePad, kAxisY);
-  s_axis_mid = make_label(scr, &lv_font_montserrat_14, kColorMuted, "");
+  s_axis_mid = make_label(s_group, &lv_font_montserrat_14, kColorMuted, "");
   lv_obj_align(s_axis_mid, LV_ALIGN_TOP_MID, 0, kAxisY);
-  lv_obj_t* axis_right = make_label(scr, &lv_font_montserrat_14, kColorMuted, "now");
-  lv_obj_align(axis_right, LV_ALIGN_TOP_RIGHT, -kEdgePad, kAxisY);
+  s_axis_right = make_label(s_group, &lv_font_montserrat_14, kColorMuted, "now");
+  lv_obj_align(s_axis_right, LV_ALIGN_TOP_RIGHT, -kEdgePad, kAxisY);
 
   // --- status strip, two rows. Both ellipsise rather than wrap: each row is one
   // line high and a wrapped line would grow downwards off the panel.
-  s_name_lbl = make_label(scr, &lv_font_montserrat_14, kColorSubText, "");
+  s_name_lbl = make_label(s_group, &lv_font_montserrat_14, kColorSubText, "");
   lv_obj_set_width(s_name_lbl, kStatusW);
   lv_label_set_long_mode(s_name_lbl, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_pos(s_name_lbl, kEdgePad, kStatusY);
 
-  s_counter_lbl = make_label(scr, &lv_font_montserrat_14, kColorMuted, "");
+  s_counter_lbl = make_label(s_group, &lv_font_montserrat_14, kColorMuted, "");
   lv_obj_set_width(s_counter_lbl, kStatusW);
   lv_label_set_long_mode(s_counter_lbl, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_pos(s_counter_lbl, kEdgePad, kStatusRow2Y);
+
+  // The chart's threshold lines are its children, and LV_STYLE_OPA applies to an
+  // object together with everything inside it, so the chart fades as one piece.
+  lv_obj_t* fade[nav::kMaxFadeWidgets];
+  int n = 0;
+  fade[n++] = s_nav.btn;
+  fade[n++] = s_clock_lbl;
+  fade[n++] = s_readout_row;
+  fade[n++] = s_max_arrow;
+  fade[n++] = s_max_num;
+  fade[n++] = s_min_arrow;
+  fade[n++] = s_min_num;
+  fade[n++] = s_chart;
+  fade[n++] = s_axis_left;
+  fade[n++] = s_axis_mid;
+  fade[n++] = s_axis_right;
+  fade[n++] = s_name_lbl;
+  fade[n++] = s_counter_lbl;
+  // Repaint on the way back in rather than waiting up to kRefreshMs: arriving from
+  // an editor that just changed a threshold, the old number would otherwise be
+  // visible for a quarter of a second on the screen the edit was made for.
+  nav::register_screen(nav::Screen::Main, s_group, fade, n, []() { refresh(nullptr); });
 }
 
 }  // namespace
@@ -654,19 +546,35 @@ esp_err_t init() {
   // fail. Cheap to check, and the symptom (captions touching the status strip) is
   // otherwise easy to mistake for a stray widget.
   if (lv_font_montserrat_14.line_height != kFont14H ||
+      lv_font_montserrat_24.line_height != kFont24H ||
       lv_font_montserrat_48.line_height != kFont48H) {
-    ESP_LOGW(kTag, "font line heights are %d/%d, layout budgeted %ld/%ld — rows may crowd",
-             lv_font_montserrat_14.line_height, lv_font_montserrat_48.line_height,
-             static_cast<long>(kFont14H), static_cast<long>(kFont48H));
+    ESP_LOGW(kTag, "font line heights are %d/%d/%d, layout budgeted %ld/%ld/%ld — rows may crowd",
+             lv_font_montserrat_14.line_height, lv_font_montserrat_24.line_height,
+             lv_font_montserrat_48.line_height, static_cast<long>(kFont14H),
+             static_cast<long>(kFont24H), static_cast<long>(kFont48H));
   }
 
-  build_screen();
+  lv_obj_t* scr = lv_screen_active();
+  lv_obj_set_style_bg_color(scr, kColorBg, LV_PART_MAIN);
+  lv_obj_set_style_border_width(scr, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(scr, 0, LV_PART_MAIN);
+  lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Every screen is built up front and then hidden, rather than built on demand:
+  // constructing a page inside a transition is what makes the transition stutter,
+  // and the whole set is a few kilobytes of widgets against 8 MB of PSRAM.
+  nav::init(scr);
+  build_screen(scr);
+  menu_screen::build(scr);
+  settings_screen::build_all(scr);
+  nav::start();
+
   refresh(nullptr);  // paint real values before the first frame, not placeholders
   lv_timer_create(refresh, kRefreshMs, nullptr);
 
   display::unlock();
   s_inited = true;
-  ESP_LOGI(kTag, "main screen up (%ldx%ld, chart %ldx%ld at y=%ld)",
+  ESP_LOGI(kTag, "screens up (%ldx%ld, chart %ldx%ld at y=%ld)",
            static_cast<long>(kScreenW), static_cast<long>(kScreenH),
            static_cast<long>(kChartW), static_cast<long>(kChartH),
            static_cast<long>(kChartY));
