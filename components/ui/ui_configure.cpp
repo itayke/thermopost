@@ -28,6 +28,11 @@ constexpr const char* kTag = "ui.configure";
 //
 // The setup AP is open, so the type is `nopass` and there is no P field — which is
 // also why nothing secret is encoded into something anyone can photograph.
+//
+// A scanner answering "you must connect manually" is not a payload bug: espressopost
+// does the same thing on the same phone. Only an OS's own camera can join a network
+// from a code — a third-party reader has neither iOS's hotspot entitlement nor
+// Android's CHANGE_WIFI_STATE — so it recognises the payload and then hands it back.
 constexpr const char* kWifiUriHead = "WIFI:S:";
 constexpr const char* kWifiUriTail = ";T:nopass;;";
 
