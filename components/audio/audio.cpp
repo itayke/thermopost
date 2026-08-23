@@ -61,18 +61,6 @@ constexpr uint32_t ms_to_samples(uint32_t ms) { return ms * kSampleRateHz / 1000
 static_assert(ms_to_samples(kBeepOnMs) % kSamplesPerPeriod == 0,
               "the beep length must be a whole number of tone periods");
 
-// --- Pin map ----------------------------------------------------------------
-// board_pins.hpp is the documented wiring; these are the two places it is only as
-// good as the wiki it came from, so both are overridable from menuconfig rather
-// than editable by guesswork. See Kconfig.projbuild for what each coin flip costs.
-#if CONFIG_THERMOPOST_AUDIO_SWAP_DATA_PINS
-constexpr int kPlaybackPin = board::kI2sDin;
-#else
-constexpr int kPlaybackPin = board::kI2sDout;
-#endif
-constexpr bool kPaInverted = CONFIG_THERMOPOST_AUDIO_PA_INVERT;
-constexpr bool kUseMclk = CONFIG_THERMOPOST_AUDIO_USE_MCLK;
-
 // --- Codec ------------------------------------------------------------------
 // The driver takes the 8-bit (shifted) address and halves it internally, so this
 // is board_pins' 0x18/0x19 shifted left, not the address the bus scan prints.
@@ -94,6 +82,8 @@ constexpr int kTaskPrio = 4;
 constexpr int kTaskCore = 0;
 
 bool s_started = false;
+i2c_master_bus_handle_t s_bus = nullptr;
+uint8_t s_addr = 0;
 i2s_chan_handle_t s_tx = nullptr;
 const audio_codec_ctrl_if_t* s_ctrl_if = nullptr;
 const audio_codec_if_t*      s_codec_if = nullptr;
@@ -149,10 +139,13 @@ esp_err_t start_i2s() {
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
                                                       I2S_SLOT_MODE_MONO),
       .gpio_cfg = {
-          .mclk = static_cast<gpio_num_t>(board::kI2sMclk),
+          // Not driven at all when the trace isn't there: the codec derives its
+          // master clock from BCLK instead, which leaves IO4 spare.
+          .mclk = board::kI2sMclkRouted ? static_cast<gpio_num_t>(board::kI2sMclk)
+                                        : I2S_GPIO_UNUSED,
           .bclk = static_cast<gpio_num_t>(board::kI2sBclk),
           .ws   = static_cast<gpio_num_t>(board::kI2sLrck),
-          .dout = static_cast<gpio_num_t>(kPlaybackPin),
+          .dout = static_cast<gpio_num_t>(board::kI2sDout),
           // The microphone is unused in v1; claiming its pin would only stop
           // something else from using it.
           .din  = I2S_GPIO_UNUSED,
@@ -209,6 +202,46 @@ bool write_samples(const int16_t* buf, uint32_t count) {
   return true;
 }
 
+#if CONFIG_THERMOPOST_AUDIO_DEBUG
+// The seven registers that answer "is this codec actually driving its output".
+// esp_codec_dev_dump_reg() offers all 255, but the ES8311 only implements about
+// seventy of them and reading the rest back as unlabelled hex is not debugging.
+// Expected readings are taken from what the driver writes in es8311_start(), so
+// they are what a working part looks like rather than what the datasheet allows.
+struct RegProbe {
+  uint8_t     reg;
+  const char* meaning;
+};
+
+constexpr RegProbe kProbes[] = {
+    {0x01, "clock manager: bit7 0 = MCLK pin, 1 = derived from BCLK; 0x00 = nothing clocked"},
+    // Not a health check: 0x00 is correct at a 256x MCLK ratio, since it holds
+    // (pre_div - 1) << 5 | pre_multi << 3 and both are 1. A rate the coefficient
+    // table cannot match fails open() outright, so this register can never be the
+    // thing that tells you about it.
+    {0x02, "MCLK pre-divider/multiplier: 0x00 is correct for a 256x ratio"},
+    {0x09, "DAC serial port: bits[4:2] word length (011 = 16 bit), bit6 set = input muted"},
+    {0x0D, "power: 0x01 = running, 0xFA = powered down"},
+    {0x12, "DAC: 0x00 = enabled, 0x02 = powered down"},
+    {0x31, "DAC mute: 0x60 set = muted"},
+    {0x32, "DAC volume: 0x00 = silent, ~0xA8 at 70%, 0xBF ~ 0 dB"},
+};
+
+void dump_codec() {
+  for (const RegProbe& probe : kProbes) {
+    int value = 0;
+    if (esp_codec_dev_read_reg(s_dev, probe.reg, &value) == ESP_CODEC_DEV_OK) {
+      ESP_LOGI(kTag, "  reg 0x%02X = 0x%02X  %s", probe.reg, value, probe.meaning);
+    } else {
+      ESP_LOGW(kTag, "  reg 0x%02X unreadable — the control port stopped answering",
+               probe.reg);
+    }
+  }
+}
+#else
+inline void dump_codec() {}
+#endif
+
 void play_tone(uint32_t ms, uint8_t volume_pct) {
   esp_codec_dev_sample_info_t fs = {
       .bits_per_sample = kBitsPerSample,
@@ -221,6 +254,12 @@ void play_tone(uint32_t ms, uint8_t volume_pct) {
   // close() drops it again — which is why the whole tone is bracketed by them
   // rather than left open. The FM8002E idles at a few mA and pops audibly if it
   // is held enabled between alarms.
+  // The first tone after a boot logs `i2s_common: i2s_channel_disable(): the
+  // channel has not been enabled yet` at E level. It is expected and harmless:
+  // esp_codec_dev's set_fmt disables the channel before reconfiguring it, and on
+  // the first open there is nothing to disable. The return is discarded and the
+  // open succeeds. It does not repeat, because close() leaves the channel disabled
+  // and every later open finds the state that disable expects.
   const int open_err = esp_codec_dev_open(s_dev, &fs);
   if (open_err != ESP_CODEC_DEV_OK) {
     ESP_LOGE(kTag, "could not open the codec for playback: %d", open_err);
@@ -233,14 +272,14 @@ void play_tone(uint32_t ms, uint8_t volume_pct) {
     ESP_LOGW(kTag, "volume %d%% rejected (%d); playing at whatever the codec had",
              vol, vol_err);
   }
+  // The codec's own view of itself, read back after the DAC is powered and the
+  // volume written. This separates "the codec is not playing" from "the codec was
+  // never configured", which look identical from outside and share no fix.
 #if CONFIG_THERMOPOST_AUDIO_DEBUG
-  // The codec's own view of itself, after the DAC is powered. This separates "the
-  // codec is not playing" from "the codec was never configured", which are
-  // indistinguishable from the outside and have nothing in common as fixes.
-  ESP_LOGI(kTag, "playing %" PRIu32 " ms at %d%% (the default curve puts 100%% at "
-                 "0 dB and 0%% at silence)", ms, vol);
-  esp_codec_dev_dump_reg(s_dev);
+  ESP_LOGI(kTag, "playing %" PRIu32 " ms at %d%% — the default curve puts 100%% at "
+                 "0 dB and 0%% at silence", ms, vol);
 #endif
+  dump_codec();
 
   uint32_t left = ms_to_samples(ms);
   bool sounding = true;
@@ -253,33 +292,9 @@ void play_tone(uint32_t ms, uint8_t volume_pct) {
   esp_codec_dev_close(s_dev);
 }
 
-void tone_task(void*) {
-  for (;;) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    play_tone(s_req_ms, s_req_vol);
-    s_stop = false;
-    s_playing = false;
-  }
-}
-
-}  // namespace
-
-esp_err_t init() {
-  if (s_started) return ESP_ERR_INVALID_STATE;
-
-  i2c_master_bus_handle_t bus = board_i2c::bus();
-  if (bus == nullptr) {
-    ESP_LOGE(kTag, "I2C bus is not up — call board_i2c::init() first");
-    return ESP_ERR_INVALID_STATE;
-  }
-
-  const uint8_t addr = probe_codec(bus);
-  if (addr == 0) {
-    ESP_LOGE(kTag, "no ES8311 at 0x%02X or 0x%02X — alarms will be visual only",
-             board::kEs8311I2cAddrLow, board::kEs8311I2cAddrHigh);
-    return ESP_ERR_NOT_FOUND;
-  }
-
+// Everything between a probed address and a playable codec. Split out of init()
+// so the hardware stack can be stood up independently of the probe and the task.
+esp_err_t bring_up() {
   esp_err_t err = start_i2s();
   if (err != ESP_OK) {
     ESP_LOGE(kTag, "I2S would not start: %s", esp_err_to_name(err));
@@ -289,8 +304,8 @@ esp_err_t init() {
 
   audio_codec_i2c_cfg_t i2c_cfg = {
       .port = 0,
-      .addr = static_cast<uint8_t>(addr << kAddrShift),
-      .bus_handle = bus,
+      .addr = static_cast<uint8_t>(s_addr << kAddrShift),
+      .bus_handle = s_bus,
       .clock_speed_hz = kCodecI2cFreqHz,
   };
   s_ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
@@ -310,8 +325,8 @@ esp_err_t init() {
   // The driver owns the amplifier's enable line, so it goes up and down with the
   // DAC instead of needing a second thing to remember.
   codec_cfg.pa_pin = board::kAudioAmpEnable;
-  codec_cfg.pa_reverted = kPaInverted;
-  codec_cfg.use_mclk = kUseMclk;
+  codec_cfg.pa_reverted = board::kAudioAmpActiveLow;
+  codec_cfg.use_mclk = board::kI2sMclkRouted;
   codec_cfg.mclk_div = kMclkMultiple;
   // hw_gain left at its defaults: it exists to back the amplifier's gain out of
   // the requested decibels, and the FM8002E's is unmeasured on this board. The
@@ -320,7 +335,7 @@ esp_err_t init() {
   s_codec_if = es8311_codec_new(&codec_cfg);
 
   if (s_ctrl_if == nullptr || s_data_if == nullptr || s_codec_if == nullptr) {
-    ESP_LOGE(kTag, "codec at 0x%02X answered but would not initialise", addr);
+    ESP_LOGE(kTag, "codec at 0x%02X answered but would not initialise", s_addr);
     teardown();
     return ESP_FAIL;
   }
@@ -336,6 +351,46 @@ esp_err_t init() {
     teardown();
     return ESP_FAIL;
   }
+  return ESP_OK;
+}
+
+void log_wiring() {
+  ESP_LOGI(kTag, "playback on IO%d, bclk IO%d, ws IO%d, mclk %s, amp enable IO%d "
+                 "active %s",
+           board::kI2sDout, board::kI2sBclk, board::kI2sLrck,
+           board::kI2sMclkRouted ? "external on IO4" : "derived from bclk",
+           board::kAudioAmpEnable, board::kAudioAmpActiveLow ? "low" : "high");
+}
+
+void tone_task(void*) {
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    play_tone(s_req_ms, s_req_vol);
+    s_stop = false;
+    s_playing = false;
+  }
+}
+
+}  // namespace
+
+esp_err_t init() {
+  if (s_started) return ESP_ERR_INVALID_STATE;
+
+  s_bus = board_i2c::bus();
+  if (s_bus == nullptr) {
+    ESP_LOGE(kTag, "I2C bus is not up — call board_i2c::init() first");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  s_addr = probe_codec(s_bus);
+  if (s_addr == 0) {
+    ESP_LOGE(kTag, "no ES8311 at 0x%02X or 0x%02X — alarms will be visual only",
+             board::kEs8311I2cAddrLow, board::kEs8311I2cAddrHigh);
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  const esp_err_t err = bring_up();
+  if (err != ESP_OK) return err;
 
   build_tone();
 
@@ -349,11 +404,8 @@ esp_err_t init() {
   // The resolved map, not the documented one: three of these can be flipped from
   // menuconfig, and a log that prints the defaults would be worse than none while
   // someone is bisecting them.
-  ESP_LOGI(kTag, "ES8311 at 0x%02X — playback on IO%d, bclk IO%d, ws IO%d, mclk %s, "
-                 "amp enable IO%d active %s",
-           addr, kPlaybackPin, board::kI2sBclk, board::kI2sLrck,
-           kUseMclk ? "external" : "from bclk", board::kAudioAmpEnable,
-           kPaInverted ? "low" : "high");
+  ESP_LOGI(kTag, "ES8311 at 0x%02X", s_addr);
+  log_wiring();
   ESP_LOGI(kTag, "%" PRIu32 " Hz tone, %" PRIu32 " Hz sample rate, %" PRIu32
                  " ms on / %" PRIu32 " ms off",
            kToneHz, kSampleRateHz, kBeepOnMs, kBeepOffMs);

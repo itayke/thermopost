@@ -74,14 +74,36 @@ inline constexpr uint8_t kEs8311I2cAddrHigh = 0x19;
 // ---------------------------------------------------------------------------
 // Audio — ES8311 codec into an FM8002E amp driving the onboard speaker
 // ---------------------------------------------------------------------------
-inline constexpr int kI2sMclk = 4;
+// Three of the five values below are NOT what the LCDwiki page says, and each was
+// established by playing a tone on every combination until one made a sound. The
+// page's names are written from the CODEC's point of view, not the ESP32's, which
+// is the trap: taken literally they send playback to the microphone pin.
+//
+// Every wrong combination fails the same way — the codec configures perfectly over
+// I²C, reports itself powered, unmuted and correctly clocked, and the speaker stays
+// silent. There is no register that reveals any of this, which is why it took a
+// sweep rather than a reading.
 inline constexpr int kI2sBclk = 5;
-inline constexpr int kI2sDout = 6;  // ESP32-S3 → codec (playback: the alert tone)
 inline constexpr int kI2sLrck = 7;
-inline constexpr int kI2sDin  = 8;  // codec → ESP32-S3 (mic; unused in v1)
-// Amplifier enable. Held low except while a tone is playing — the FM8002E idles
-// at a few mA and audibly pops if it is left enabled.
-inline constexpr int kAudioAmpEnable = 1;
+// Named from the ESP32's point of view, so the wiki's "DOUT=6 / DIN=8" is inverted
+// here. IO8 carries playback to the codec; IO6 is the microphone's return path.
+inline constexpr int kI2sDout = 8;  // ESP32-S3 → codec (playback: the alert tone)
+inline constexpr int kI2sDin  = 6;  // codec → ESP32-S3 (mic; unused in v1)
+
+// The wiki lists MCLK on IO4, and the codec will not run from it. Whether the trace
+// is absent or just wrong, the ES8311 can derive its own master clock from BCLK and
+// does, so nothing needs this pin — see kI2sMclkRouted.
+inline constexpr int kI2sMclk = 4;
+// False until something proves otherwise: with it false the pin is left alone
+// entirely, so IO4 is effectively spare. Flip it and the codec is told to expect an
+// external MCLK on IO4 — which is the one-line experiment that would settle it.
+inline constexpr bool kI2sMclkRouted = false;
+
+// Amplifier enable — active LOW on this board, the opposite of what the FM8002E's
+// datasheet default and the wiki both imply. Driven by the codec driver, which
+// raises it on open and drops it on close.
+inline constexpr int  kAudioAmpEnable = 1;
+inline constexpr bool kAudioAmpActiveLow = true;
 
 // ---------------------------------------------------------------------------
 // MCP9808 surface-temperature sensor — on the shared I²C bus above, via the

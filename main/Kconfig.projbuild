@@ -53,47 +53,16 @@ config THERMOPOST_TOUCH_LOG
         Presses are human-paced, so this costs nothing while it is on.
 
 # --- Audio ------------------------------------------------------------------
-# Three of these exist because the LCDwiki page is the only source for the codec
-# wiring and it does not say whose point of view its signal names are from. Each
-# is a coin flip that sounds identical when it is wrong — silence — so they are
-# switches to bisect with rather than edits to guess at.
 
-config THERMOPOST_AUDIO_SWAP_DATA_PINS
-    bool "Swap the I2S data pins (DOUT <-> DIN)"
-    default n
+config THERMOPOST_AUDIO_TEST_SECONDS
+    int "Length of the Sound page's test tone, in seconds"
+    default 2
+    range 1 60
     help
-        board_pins.hpp reads the wiki's "DOUT=6 / DIN=8" from the ESP32's point
-        of view: IO6 carries samples to the codec. If the page meant the CODEC's
-        point of view instead, the two are backwards and playback is being sent
-        to the microphone pin — the codec configures fine over I2C, the amplifier
-        enables, and nothing comes out.
-
-        Turn this on to send playback on IO8 instead. If the speaker works either
-        way, leave it off; if it only works on, fix board_pins.hpp and retire
-        this option.
-
-config THERMOPOST_AUDIO_PA_INVERT
-    bool "The amplifier enable is active low"
-    default n
-    help
-        The FM8002E's enable line is driven high to play by default. If this
-        board wires it through an inverter, or the part is a shutdown-style
-        variant where low means run, playing a tone actively mutes the amplifier.
-
-        Symptom is identical to a dead amplifier, so try it before suspecting the
-        hardware.
-
-config THERMOPOST_AUDIO_USE_MCLK
-    bool "Feed the codec an external master clock"
-    default y
-    help
-        The ES8311 can take MCLK on its own pin or derive it from BCLK. The wiki
-        lists MCLK on IO4, so the default assumes it is routed; if it is not, the
-        codec never clocks its DAC and stays silent no matter what is written to
-        it.
-
-        Turning this off makes the codec derive its clock from BCLK, which works
-        on boards that leave the MCLK pin unconnected.
+        Two seconds is the right length for judging a working speaker and the
+        wrong length for probing a silent one — there are six pins to meter and
+        the tone is over before the second probe lands. Raise it while chasing a
+        fault, put it back afterwards.
 
 config THERMOPOST_AUDIO_DEBUG
     bool "Dump codec registers and log every tone"
@@ -102,6 +71,8 @@ config THERMOPOST_AUDIO_DEBUG
         Dumps the ES8311's register file after the DAC is powered up, and logs
         each tone's volume, requested decibels and sample count. The register
         dump is the difference between "the codec is not playing" and "the codec
-        was never configured", which look the same from outside.
+        was never configured", which look the same from outside — a distinction
+        that mattered enough to find this board's three wrong pin facts, and will
+        matter again on the next board revision.
 
 endmenu

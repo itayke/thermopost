@@ -416,7 +416,7 @@ StepperState s_volume = {};
 constexpr const char* kOn  = "On";
 constexpr const char* kOff = "Off";
 constexpr const char* kSilentWarning = "alarms will be silent";
-constexpr const char* kAudibleNote   = "tap Test for a two-second alarm";
+constexpr const char* kAudibleFmt    = "tap Test for a %d-second alarm";
 constexpr const char* kNoCodec       = "no codec found — alarms will be visual only";
 
 // --- The test button --------------------------------------------------------
@@ -424,7 +424,8 @@ constexpr const char* kNoCodec       = "no codec found — alarms will be visual
 // volume carries across the room, and short enough that nobody reaches for the
 // power switch. It lives here rather than in `audio` because it is a property of
 // this button, not of the tone — M7's real alarm runs until the reading recovers.
-constexpr uint32_t kTestToneMs = 2000;
+constexpr int      kTestSeconds = CONFIG_THERMOPOST_AUDIO_TEST_SECONDS;
+constexpr uint32_t kTestToneMs = static_cast<uint32_t>(kTestSeconds) * 1000;
 constexpr int32_t  kTestW = 160;
 constexpr int32_t  kTestH = kToggleH;
 // The tone runs on its own task, so the button cannot know it has finished; it
@@ -464,9 +465,15 @@ void refresh_state() {
   set_test_enabled(have_codec && s.sound_enabled);
   refresh_test_label();
 
-  lv_label_set_text(s_page.footer, !have_codec      ? kNoCodec
-                                   : s.sound_enabled ? kAudibleNote
-                                                     : kSilentWarning);
+  if (!have_codec) {
+    lv_label_set_text(s_page.footer, kNoCodec);
+  } else if (!s.sound_enabled) {
+    lv_label_set_text(s_page.footer, kSilentWarning);
+  } else {
+    char note[kTextMax];
+    std::snprintf(note, sizeof(note), kAudibleFmt, kTestSeconds);
+    lv_label_set_text(s_page.footer, note);
+  }
 }
 
 void on_toggle(lv_event_t*) {

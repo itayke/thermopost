@@ -21,14 +21,24 @@ By Itay Keren <itay@untame.com>. Copyright (c) 2026 Itay Keren.
 |---|---|---|
 | Display | ILI9341V, 240×320 (used rotated to 320×240 landscape) | SPI2 |
 | Touch | FT6336G | I²C0 @ 0x38 |
-| Audio | ES8311 codec → FM8002E amp → onboard speaker | I²S + I²C0 |
+| Audio | ES8311 codec → FM8002E amp → onboard speaker | I²S (see below) + I²C0 @ 0x18 |
 | Charging | TP4054, battery sense on GPIO9 | ADC1_CH8 |
 | Storage | microSD (unused in v1) | SDIO |
 
 The pin map in [`main/board_pins.hpp`](main/board_pins.hpp) is transcribed from
-[lcdwiki.com](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display) and **confirmed
-on hardware** — the bring-up probe checked every pin except the panel, and the
-display driver confirmed that by drawing. The controller takes the ILI9341
+[lcdwiki.com](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display) and confirmed on
+hardware **except for the audio block, where the page is wrong in three places** —
+the bring-up probe checked every pin it can reach over I²C, and the display driver
+confirmed the panel by drawing, but neither can see an I²S wire.
+
+Those three corrections, because they cost a long afternoon: the page's `DOUT`/`DIN`
+are named from the **codec's** point of view, so playback goes out on **IO8**, not
+IO6; **MCLK on IO4 does not work**, and the ES8311 derives its master clock from
+BCLK instead; and the amplifier's enable on IO1 is **active low**, not high. Each
+wrong combination fails identically and silently — the codec accepts its whole
+register sequence over I²C and reports itself powered, unmuted and correctly
+clocked, with no register anywhere that reveals the fault. Worth knowing before
+trusting any other line of that table. The controller takes the ILI9341
 command set; it is one of the "IPS" variants, so it needs `INVON` (without it
 the image comes up as a photographic negative).
 
@@ -104,7 +114,7 @@ are cosmetic and never go away.
 ## Usage
 
 Flashing brings the board up through `display → nvs → storage → settings → i2c →
-sensor → touch → recorder → ui` and draws the main screen:
+sensor → touch → audio → recorder → ui` and draws the main screen:
 
 ```
  (☰ Menu)      72.4°F            ↑ 86.0
@@ -297,7 +307,15 @@ The Sound page also carries a **Test alarm** button: two seconds of the real ton
 the real volume, so the speaker can be judged without waiting for a threshold to be
 crossed. It is the same code path M7's alarm will use, which is the point — a test
 that exercises a second implementation proves nothing about the first. A second tap
-stops it rather than queueing another two seconds.
+stops it rather than queueing another two seconds. Its length is
+`THERMOPOST_AUDIO_TEST_SECONDS`, raisable to a minute, which is what makes the pins
+meterable while a tone is held.
+
+It also earned its keep before it ever worked: it was the only way to make the
+board's mis-documented audio wiring observable, since the fault mode is silence and
+the codec reports itself healthy throughout. `THERMOPOST_AUDIO_DEBUG` still logs the
+seven registers that separate "the codec is not playing" from "the codec was never
+configured", which is the distinction that eventually cornered it.
 
 It is greyed and unclickable in exactly two cases, and the footer says which: when
 the master mute is off, and when no codec answered at boot. The mute case is
@@ -456,7 +474,7 @@ returns.
 | ✅ Built | `touch` — FT6336 via the FT5x06 driver, registered as an LVGL pointer indev |
 | ✅ Built | `recorder` + `ui` — one record per interval, graph backfilled from the log on boot, main screen with readout / chart / status strip |
 | ✅ Built | menu hub + four settings pages, ported stepper with coupled bounds, cross-fade between screens |
-| ✅ Built | `audio` — ES8311 over I²S, beeping alarm tone, driven from the Sound page's test button |
+| ✅ Verified | `audio` — ES8311 over I²S, beeping alarm tone out of the speaker, driven from the Sound page's test button |
 | ⬜️ Not started | alerts (the state machine's wiring and visuals), cloud + config service, power |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
@@ -483,16 +501,17 @@ state machine and M9's RTC-memory mirror an obvious place to attach.
   intermediate duty cycles may not actually dim — in which case
   `set_brightness()` collapses to on/off and the power model loses its "dim"
   tier. Settles the first time the idle policy steps it down.
-- **The ES8311 tone.** Built ahead of the rest of M7 so the Sound page's test
-  button has something to play — driving a codec over I²S for a simple beep was
-  always the least certain part of the build, and a button that makes the noise on
-  demand is what makes it debuggable at all. It is behind a four-function API
-  (`init` / `available` / `play` / `stop`), so a board where the codec never answers
-  degrades to visual-only alerts instead of blocking anything else: `init()` returns
-  `ESP_ERR_NOT_FOUND`, boot carries on, and the Sound page says so. **Unheard on
-  hardware so far.** The uncertain parts are the ES8311's clock setup (16 kHz, MCLK
-  at 256×) and whether the FM8002E's enable line is where the pin map says it is —
-  both audible in one tap.
+- **Is IO4 actually spare?** MCLK does not work on it, so the codec derives its
+  master clock from BCLK and `kI2sMclkRouted` is false, which leaves the pin
+  undriven. Whether that is a missing trace or a wrong pin number is unresolved,
+  and it matters only because a genuinely free GPIO is worth knowing about. Flipping
+  `kI2sMclkRouted` and tapping Test settles it in one flash.
+- **Can the amplifier be gated at all?** The enable on IO1 turned out to be active
+  low, and during the wiring sweep *both* polarities produced sound, which suggests
+  the amp may be hard-enabled and IO1 not in control of it. If so the FM8002E draws
+  its idle current continuously and M9's power measurements have to include it —
+  `board_pins.hpp` currently claims the line is held inactive between alarms, which
+  may be wishful.
 - **Default alarm band.** Currently **20–25 °C**, deliberately tight around room
   temperature so both directions are reachable on a desk — cup the sensor to breach
   the maximum, a cold drink or canned air to breach the minimum. That makes the
