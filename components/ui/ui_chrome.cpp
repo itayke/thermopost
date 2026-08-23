@@ -250,7 +250,7 @@ void build_nav_pill(lv_obj_t* parent, NavPill* pill, NavGlyph glyph, const char*
   // gives every plain container one — so the word came out in the theme's colour
   // rather than the capsule's.
   pill->btn = build_pill(parent, nullptr, kNavPillW, kNavPillH, kColorMenu,
-                         &lv_font_montserrat_14, on_tap, nullptr);
+                         kFontBody, on_tap, nullptr);
   lv_obj_set_pos(pill->btn, kEdgePad, kNavPillY);
   lv_obj_set_style_pad_all(pill->btn, 0, LV_PART_MAIN);
   lv_obj_set_style_pad_column(pill->btn, kNavRowGap, LV_PART_MAIN);
@@ -273,7 +273,7 @@ void build_nav_pill(lv_obj_t* parent, NavPill* pill, NavGlyph glyph, const char*
 
   // Inherits its colour, and the pressed variant, from the capsule it sits on.
   lv_obj_t* lbl = lv_label_create(pill->btn);
-  lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, LV_PART_MAIN);
+  lv_obj_set_style_text_font(lbl, kFontBody, LV_PART_MAIN);
   lv_label_set_text(lbl, text);
 }
 
@@ -283,12 +283,12 @@ void build_page_chrome(lv_obj_t* scr, const char* title, PageChrome* c,
   build_nav_pill(c->group, &c->back, NavGlyph::Chevron, "Back",
                  on_back != nullptr ? on_back : on_page_back);
 
-  c->heading = make_boxed_label(c->group, &lv_font_montserrat_24, kColorText, kHeadingW,
+  c->heading = make_boxed_label(c->group, kFontTitle, kColorText, kHeadingW,
                                 LV_TEXT_ALIGN_CENTER);
   lv_label_set_text(c->heading, title);
   lv_obj_set_pos(c->heading, kEdgePad + kNavPillW, kHeadingY);
 
-  c->footer = make_boxed_label(c->group, &lv_font_montserrat_14, kColorMuted,
+  c->footer = make_boxed_label(c->group, kFontBody, kColorMuted,
                                kScreenW - 2 * kEdgePad, LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(c->footer, kEdgePad, kFooterY);
 }

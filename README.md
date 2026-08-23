@@ -136,6 +136,16 @@ below the minimum, amber when the sensor isn't answering. The colour says which
 way the temperature went before the digits are legible, which is what a screen
 read across a room actually conveys.
 
+Every screen asks for a *role* rather than a face — `kFontBody` for captions,
+chips and the status strip, `kFontTitle` for headings and button labels,
+`kFontReadout` for the big number — and the three are bound to LVGL's Montserrat
+in one block at the top of `ui_theme.hpp`. Setting the UI in something else is
+those three lines plus the line heights beneath them, which the layout needs as
+literals because a font's metrics are only known at link time; `ui::init()` checks
+them against the linked faces at boot and warns rather than letting a swap quietly
+crowd the rows. `sdkconfig.defaults` carries the note on converting a TTF, whose
+one real trap is that `LV_SYMBOL_*` are icon-font codepoints no text face has.
+
 The unit rides after the digits at the small text size, sitting on their baseline.
 That offset is computed from the two fonts' own metrics — a baseline is
 `line_height - base_line` below a box's top — rather than dialled in by eye, so

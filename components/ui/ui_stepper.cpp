@@ -50,7 +50,7 @@ void stepper_plus(lv_event_t* e) {
 lv_obj_t* build_disc(lv_obj_t* parent, const char* glyph, int32_t diam,
                      lv_event_cb_t cb, StepperState* st) {
   return build_pill(parent, glyph, diam, diam, kColorStepper,
-                    &lv_font_montserrat_24, cb, st);
+                    kFontTitle, cb, st);
 }
 
 }  // namespace

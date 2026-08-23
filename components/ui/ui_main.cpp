@@ -38,9 +38,9 @@ constexpr size_t kClockTextMax = 16;
 constexpr const char* kNoValue = "--.-";
 
 // Short on purpose. "clock not set" is the fuller phrase, and it is what the menu
-// says because it has the width — but at Montserrat 14 it reaches under a centred
-// 48 px readout, and a status line that collides with the number beside it is worse
-// than a terser one.
+// says because it has the width — but at Montserrat 14 it reaches under the centred
+// readout, and a status line that collides with the number beside it is worse than
+// a terser one.
 constexpr const char* kNoClock = "no clock";
 
 // --- Top band: clock under the nav pill (left) -------------------------------
@@ -55,7 +55,10 @@ constexpr int32_t kClockY = kNavPillY + kNavPillH + kClockGap;
 // Wide enough for kNoClock and no wider, so a long value can never grow into the
 // readout's space.
 constexpr int32_t kClockW = 64;
-static_assert(kClockY + kFont14H <= kTopPad + kReadoutH,
+// Exactly level at Montserrat 42: the clock's last row ends on the readout band's
+// own bottom edge, so the left column has no slack left and a smaller readout font
+// fails here rather than pushing the clock into the chart.
+static_assert(kClockY + kFontBodyH <= kTopPad + kReadoutH,
               "the clock row overflows the top band");
 
 // --- Top band: threshold chips (right) --------------------------------------
@@ -70,7 +73,7 @@ constexpr int32_t kChipNumX   = kChipArrowX + kChipArrowW;
 constexpr int32_t kChipY      = kTopPad + kTopRowNudge;
 // Leading between the two chip rows — a line height alone sets them touching.
 constexpr int32_t kChipLeading = 2;
-constexpr int32_t kChipSpacing = kFont14H + kChipLeading;
+constexpr int32_t kChipSpacing = kFontBodyH + kChipLeading;
 static_assert(kChipArrowX > kScreenW / 2, "threshold chips reach past the centre");
 
 // The readout centres in the gap between the two side columns rather than on the
@@ -89,7 +92,7 @@ constexpr int32_t kReadoutUnitGap = 2;
 
 // --- Status strip: name on the first row, counters on the second -------------
 constexpr int32_t kStatusW = kScreenW - 2 * kEdgePad;
-constexpr int32_t kStatusRow2Y = kStatusY + kFont14H;
+constexpr int32_t kStatusRow2Y = kStatusY + kFontBodyH;
 
 // Shown in place of the high-water mark while no Sheet endpoint is configured.
 // Deliberately not "0" — zero uploaded is a claim that an uploader is running and
@@ -389,7 +392,7 @@ void menu_clicked(lv_event_t*) { nav::go(nav::Screen::Menu); }
 // threshold numbers — so the font is bound once here rather than at each call.
 lv_obj_t* make_chip_label(lv_obj_t* parent, lv_color_t color, int32_t w,
                           lv_text_align_t align) {
-  return make_boxed_label(parent, &lv_font_montserrat_14, color, w, align);
+  return make_boxed_label(parent, kFontBody, color, w, align);
 }
 
 void build_chart(lv_obj_t* scr) {
@@ -468,28 +471,28 @@ void build_top_band(lv_obj_t* scr) {
   lv_obj_add_flag(s_readout_row, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(s_readout_row, value_clicked, LV_EVENT_CLICKED, nullptr);
 
-  s_value_lbl = make_label(s_readout_row, &lv_font_montserrat_48, kColorText, kNoValue);
-  s_unit_lbl = make_label(s_readout_row, &lv_font_montserrat_14, kColorText, "");
+  s_value_lbl = make_label(s_readout_row, kFontReadout, kColorText, kNoValue);
+  s_unit_lbl = make_label(s_readout_row, kFontBody, kColorText, "");
 
   // Sit the unit on the digits' baseline, computed from the two fonts rather than
   // guessed: a font's baseline is line_height - base_line below its box top, so the
   // unit's box needs padding equal to the difference. Derived, so swapping either
   // font keeps them aligned instead of quietly drifting apart.
   const int32_t digits_baseline =
-      lv_font_montserrat_48.line_height - lv_font_montserrat_48.base_line;
+      kFontReadout->line_height - kFontReadout->base_line;
   const int32_t unit_baseline =
-      lv_font_montserrat_14.line_height - lv_font_montserrat_14.base_line;
+      kFontBody->line_height - kFontBody->base_line;
   lv_obj_set_style_pad_top(s_unit_lbl, digits_baseline - unit_baseline, LV_PART_MAIN);
 
   lv_obj_align(s_readout_row, LV_ALIGN_TOP_MID, kReadoutDx, kReadoutY);
 
   // --- threshold chips, right. Arrows fixed, numbers centred beside them.
-  s_max_arrow = make_label(scr, &lv_font_montserrat_14, kColorHigh, LV_SYMBOL_UP);
+  s_max_arrow = make_label(scr, kFontBody, kColorHigh, LV_SYMBOL_UP);
   lv_obj_set_pos(s_max_arrow, kChipArrowX, kChipY);
   s_max_num = make_chip_label(scr, kColorHigh, kChipNumW, LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(s_max_num, kChipNumX, kChipY);
 
-  s_min_arrow = make_label(scr, &lv_font_montserrat_14, kColorLow, LV_SYMBOL_DOWN);
+  s_min_arrow = make_label(scr, kFontBody, kColorLow, LV_SYMBOL_DOWN);
   lv_obj_set_pos(s_min_arrow, kChipArrowX, kChipY + kChipSpacing);
   s_min_num = make_chip_label(scr, kColorLow, kChipNumW, LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(s_min_num, kChipNumX, kChipY + kChipSpacing);
@@ -502,21 +505,21 @@ void build_screen(lv_obj_t* scr) {
   build_chart(s_group);
 
   // --- time captions
-  s_axis_left = make_label(s_group, &lv_font_montserrat_14, kColorMuted, "");
+  s_axis_left = make_label(s_group, kFontBody, kColorMuted, "");
   lv_obj_set_pos(s_axis_left, kEdgePad, kAxisY);
-  s_axis_mid = make_label(s_group, &lv_font_montserrat_14, kColorMuted, "");
+  s_axis_mid = make_label(s_group, kFontBody, kColorMuted, "");
   lv_obj_align(s_axis_mid, LV_ALIGN_TOP_MID, 0, kAxisY);
-  s_axis_right = make_label(s_group, &lv_font_montserrat_14, kColorMuted, "now");
+  s_axis_right = make_label(s_group, kFontBody, kColorMuted, "now");
   lv_obj_align(s_axis_right, LV_ALIGN_TOP_RIGHT, -kEdgePad, kAxisY);
 
   // --- status strip, two rows. Both ellipsise rather than wrap: each row is one
   // line high and a wrapped line would grow downwards off the panel.
-  s_name_lbl = make_label(s_group, &lv_font_montserrat_14, kColorSubText, "");
+  s_name_lbl = make_label(s_group, kFontBody, kColorSubText, "");
   lv_obj_set_width(s_name_lbl, kStatusW);
   lv_label_set_long_mode(s_name_lbl, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_pos(s_name_lbl, kEdgePad, kStatusY);
 
-  s_counter_lbl = make_label(s_group, &lv_font_montserrat_14, kColorMuted, "");
+  s_counter_lbl = make_label(s_group, kFontBody, kColorMuted, "");
   lv_obj_set_width(s_counter_lbl, kStatusW);
   lv_label_set_long_mode(s_counter_lbl, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_pos(s_counter_lbl, kEdgePad, kStatusRow2Y);
@@ -561,13 +564,13 @@ esp_err_t init() {
   // update that changes a line height would silently crowd the rows rather than
   // fail. Cheap to check, and the symptom (captions touching the status strip) is
   // otherwise easy to mistake for a stray widget.
-  if (lv_font_montserrat_14.line_height != kFont14H ||
-      lv_font_montserrat_24.line_height != kFont24H ||
-      lv_font_montserrat_48.line_height != kFont48H) {
+  if (kFontBody->line_height != kFontBodyH ||
+      kFontTitle->line_height != kFontTitleH ||
+      kFontReadout->line_height != kFontReadoutH) {
     ESP_LOGW(kTag, "font line heights are %d/%d/%d, layout budgeted %ld/%ld/%ld — rows may crowd",
-             lv_font_montserrat_14.line_height, lv_font_montserrat_24.line_height,
-             lv_font_montserrat_48.line_height, static_cast<long>(kFont14H),
-             static_cast<long>(kFont24H), static_cast<long>(kFont48H));
+             kFontBody->line_height, kFontTitle->line_height,
+             kFontReadout->line_height, static_cast<long>(kFontBodyH),
+             static_cast<long>(kFontTitleH), static_cast<long>(kFontReadoutH));
   }
 
   lv_obj_t* scr = lv_screen_active();

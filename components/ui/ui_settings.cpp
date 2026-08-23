@@ -26,7 +26,7 @@ constexpr size_t kSpanTextMax = 32;
 // Two columns, two rows. A cell is a caption with its control underneath, and the
 // cell is as wide as the widest control it can hold — the stepper, click area
 // included — so a caption can never be wider than the thing it labels.
-constexpr StepperCfg kStepperCfg = {&lv_font_montserrat_24, 50, 34};
+constexpr StepperCfg kStepperCfg = {kFontTitle, 50, 34};
 
 constexpr int32_t kCaptionGap = 2;
 constexpr int32_t kRow1Y = 48;
@@ -55,7 +55,7 @@ static_assert(kPillH <= kControlBandH,
 constexpr int32_t kCellW = stepper_width(kStepperCfg);
 static_assert(kColLeftCx - kCellW / 2 >= 0, "the left column overhangs the screen");
 static_assert(kColRightCx + kCellW / 2 <= kScreenW, "the right column overhangs the screen");
-static_assert(kRow2Y + kFont14H + kCaptionGap + stepper_height(kStepperCfg) <= kFooterY,
+static_assert(kRow2Y + kFontBodyH + kCaptionGap + stepper_height(kStepperCfg) <= kFooterY,
               "the second control row runs into the footer");
 
 // Three pages put a control in each column of row 1, so the two must not meet.
@@ -105,7 +105,7 @@ void place(lv_obj_t* obj, int32_t cx, int32_t w, int32_t y) {
 }
 
 lv_obj_t* build_caption(lv_obj_t* group, int32_t cx, int32_t y, const char* text) {
-  lv_obj_t* l = make_boxed_label(group, &lv_font_montserrat_14, kColorSubText, kCellW,
+  lv_obj_t* l = make_boxed_label(group, kFontBody, kColorSubText, kCellW,
                                  LV_TEXT_ALIGN_CENTER);
   lv_label_set_text(l, text);
   lv_obj_set_pos(l, cx - kCellW / 2, y);
@@ -118,7 +118,7 @@ lv_obj_t* build_stepper_cell(lv_obj_t* group, int32_t cx, int32_t y, const char*
                              StepperState* st, lv_obj_t** out_caption) {
   *out_caption = build_caption(group, cx, y, caption);
   lv_obj_t* row = build_stepper(group, st, kStepperCfg);
-  place(row, cx, stepper_width(kStepperCfg), y + kFont14H + kCaptionGap);
+  place(row, cx, stepper_width(kStepperCfg), y + kFontBodyH + kCaptionGap);
   return row;
 }
 
@@ -129,8 +129,8 @@ lv_obj_t* build_toggle_cell(lv_obj_t* group, int32_t cx, int32_t y, const char* 
                             lv_event_cb_t on_tap, lv_obj_t** out_caption) {
   *out_caption = build_caption(group, cx, y, caption);
   lv_obj_t* pill = build_pill(group, "", kToggleW, kToggleH, kColorText,
-                              &lv_font_montserrat_24, on_tap, nullptr);
-  place(pill, cx, kToggleW, y + kFont14H + kCaptionGap + kPillBandDy);
+                              kFontTitle, on_tap, nullptr);
+  place(pill, cx, kToggleW, y + kFontBodyH + kCaptionGap + kPillBandDy);
   return pill;
 }
 
@@ -518,8 +518,8 @@ void build(lv_obj_t* scr) {
   fade[n++] = cap;
 
   s_test = build_pill(s_page.group, kTestIdle, kTestW, kTestH, kColorText,
-                      &lv_font_montserrat_24, on_test, nullptr);
-  place(s_test, kColMidCx, kTestW, kRow2Y + kFont14H + kCaptionGap + kPillBandDy);
+                      kFontTitle, on_test, nullptr);
+  place(s_test, kColMidCx, kTestW, kRow2Y + kFontBodyH + kCaptionGap + kPillBandDy);
   fade[n++] = s_test;
 
   load();

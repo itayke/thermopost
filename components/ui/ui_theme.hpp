@@ -53,6 +53,21 @@ constexpr lv_color_t kColorMenu = color(0xF37B02);
 // the navigation chrome along with it — the two are unrelated decisions.
 constexpr lv_color_t kColorStepper = kColorMenu;
 
+// --- Typography -------------------------------------------------------------
+// Screens name a role, never a face. Three roles cover the whole UI: body for
+// captions, chips, footers and the status strip; title for headings and every
+// button label; readout for the one big number on the main screen. Changing what
+// the UI is set in is then these three lines plus the heights below, rather than
+// three dozen call sites that each happened to pick a size.
+//
+// LVGL's built-in Montserrat is what ships with the library, at whichever sizes
+// sdkconfig.defaults enables. A different typeface has to be converted to a C
+// array and compiled in — see the note there — but nothing outside this block
+// needs to know that happened.
+constexpr const lv_font_t* kFontBody    = &lv_font_montserrat_14;
+constexpr const lv_font_t* kFontTitle   = &lv_font_montserrat_24;
+constexpr const lv_font_t* kFontReadout = &lv_font_montserrat_42;
+
 // --- Layout: 320x240 landscape ---------------------------------------------
 // Taken from the display's own resolution rather than restated, so a rotation
 // change cannot leave the layout silently disagreeing with the panel.
@@ -61,31 +76,36 @@ constexpr int32_t kScreenH = board::kLcdVRes;
 constexpr int32_t kEdgePad = 8;
 
 // A row's height is its font's line_height, NOT its point size — Montserrat 14
-// occupies 16 px and Montserrat 48 occupies 52. Budgeting by point size overflows
+// occupies 16 px and Montserrat 42 occupies 46. Budgeting by point size overflows
 // the 240 px column by just enough that the time captions land on top of the
 // status strip, which looks like a stray widget rather than an arithmetic error.
-// ui::init() checks these against the linked fonts at boot.
-constexpr int32_t kFont14H = 16;
-constexpr int32_t kFont24H = 27;
-constexpr int32_t kFont48H = 52;
+//
+// These have to be literals because the layout below is constexpr and a font's
+// line_height is only known at link time, so they are the one place the fonts
+// above are restated. ui::init() checks them against the linked faces at boot and
+// warns on a mismatch — which is what a font swap that forgot this looks like.
+constexpr int32_t kFontBodyH    = 16;
+constexpr int32_t kFontTitleH   = 27;
+constexpr int32_t kFontReadoutH = 46;
 
 // Rows, top to bottom: readout, chart, time captions, status strip. Everything is
 // a fixed band except the chart, which absorbs the remainder — so rounding can
 // never open a seam at the bottom edge.
 // The top band holds three columns: the menu glyph with the clock beneath it on
-// the left, the readout centred, and the threshold chips right. The 48 px readout
-// is the tallest of the three, so it sets the band's height.
+// the left, the readout centred, and the threshold chips right. The readout is the
+// tallest of the three, so it sets the band's height — and the chart, which takes
+// whatever is left, grows and shrinks with it.
 constexpr int32_t kTopPad    = 4;  // the big readout wants to sit high
 constexpr int32_t kChartGap  = 6;
 constexpr int32_t kReadoutY  = kTopPad;
-constexpr int32_t kReadoutH  = kFont48H;
-constexpr int32_t kAxisH     = kFont14H;
+constexpr int32_t kReadoutH  = kFontReadoutH;
+constexpr int32_t kAxisH     = kFontBodyH;
 // Two rows: the post's name, then the record counters. One row would be tidier,
 // but the three counters run to about 250 px and a 24-character name needs most of
 // the remaining width — they do not fit on a line together, and truncating either
 // one costs more than the 16 px the chart gives up.
 constexpr int32_t kStatusRows = 2;
-constexpr int32_t kStatusH    = kStatusRows * kFont14H;
+constexpr int32_t kStatusH    = kStatusRows * kFontBodyH;
 
 constexpr int32_t kChartX = kEdgePad;
 constexpr int32_t kChartY = kReadoutY + kReadoutH + kChartGap;
@@ -189,6 +209,6 @@ static_assert(kHeadingCx - kHeadingW / 2 >= kEdgePad + kNavPillW,
 // rather than in each page's own file because three of them had derived the same
 // expression independently, and a fourth would have made it a convention nobody
 // had written down.
-constexpr int32_t kFooterY = kScreenH - kEdgePad - kFont14H;
+constexpr int32_t kFooterY = kScreenH - kEdgePad - kFontBodyH;
 
 }  // namespace thermopost::ui

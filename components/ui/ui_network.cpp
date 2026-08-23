@@ -20,9 +20,9 @@ constexpr size_t kTextMax = 64;
 // sentences, not values, and the longest of them (an SSID plus its signal) needs
 // the whole line.
 constexpr int32_t kLineGap = 4;
-constexpr int32_t kLineH   = kFont14H + kLineGap;
+constexpr int32_t kLineH   = kFontBodyH + kLineGap;
 constexpr int     kLines   = 5;
-constexpr int32_t kInfoY   = kHeadingY + kFont24H + 8;
+constexpr int32_t kInfoY   = kHeadingY + kFontTitleH + 8;
 constexpr int32_t kInfoW   = kScreenW - 2 * kEdgePad;
 constexpr int32_t kInfoBottom = kInfoY + kLines * kLineH;
 
@@ -211,7 +211,7 @@ void build(lv_obj_t* scr) {
   fade[n++] = s_page.footer;
 
   for (int i = 0; i < kLines; ++i) {
-    s_line[i] = make_boxed_label(s_page.group, &lv_font_montserrat_14, kColorText,
+    s_line[i] = make_boxed_label(s_page.group, kFontBody, kColorText,
                                  kInfoW, LV_TEXT_ALIGN_CENTER);
     // An SSID may be 32 characters, which is wider than the panel at this font.
     lv_label_set_long_mode(s_line[i], LV_LABEL_LONG_MODE_DOTS);
@@ -221,12 +221,12 @@ void build(lv_obj_t* scr) {
 
   const int32_t row_x = (kScreenW - kBtnRowW) / 2;
   s_setup = build_pill(s_page.group, kConfigureText, kBtnW, kBtnH, kColorText,
-                       &lv_font_montserrat_14, on_configure, nullptr);
+                       kFontBody, on_configure, nullptr);
   lv_obj_set_pos(s_setup, row_x, kBtnY);
   fade[n++] = s_setup;
 
   s_forget = build_pill(s_page.group, kForgetText, kBtnW, kBtnH, kColorText,
-                        &lv_font_montserrat_14, on_forget, nullptr);
+                        kFontBody, on_forget, nullptr);
   lv_obj_set_pos(s_forget, row_x + kBtnW + kBtnGap, kBtnY);
   fade[n++] = s_forget;
 

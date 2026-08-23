@@ -50,7 +50,7 @@ static_assert(4 + kEntryCount <= nav::kMaxFadeWidgets,
 // Heading + hint at the top, a grid of entry pills, one status line along the
 // bottom. Two columns rather than one because four stacked pills tall enough to hit
 // reliably do not fit under a heading on a 240 px panel.
-constexpr int32_t kHintY = kHeadingY + kFont24H + 2;
+constexpr int32_t kHintY = kHeadingY + kFontTitleH + 2;
 // The hint spans the full width, so it has to start below the nav pill rather than
 // beside it — a full-width line at the heading's height would run under the pill.
 static_assert(kHintY >= kNavPillY + kNavPillH,
@@ -88,7 +88,7 @@ static_assert(kEntryW > kEntryH,
 // The grid is centred in whatever is left between the hint and the footer rather than
 // pinned below the hint, so changing kEntryH or adding a row rebalances the screen
 // instead of piling the slack at the bottom.
-constexpr int32_t kGridTop = kHintY + kFont14H;
+constexpr int32_t kGridTop = kHintY + kFontBodyH;
 // Rounded up, because an odd entry count is allowed and takes a row of its own,
 // centred. The alternatives are worse: a hole beside it reads as a button that
 // failed to draw, and padding the list with a page nobody asked for is a page
@@ -158,7 +158,7 @@ void build(lv_obj_t* scr) {
 
   // Boxed and ellipsised: 24 characters of name at Montserrat 24 is wider than the
   // band beside the pill, and a name that wraps would push the grid down.
-  s_name = make_boxed_label(s_group, &lv_font_montserrat_24, kColorText, kHeadingW,
+  s_name = make_boxed_label(s_group, kFontTitle, kColorText, kHeadingW,
                             LV_TEXT_ALIGN_CENTER);
   lv_label_set_long_mode(s_name, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_pos(s_name, kEdgePad + kNavPillW, kHeadingY);
@@ -168,7 +168,7 @@ void build(lv_obj_t* scr) {
   // entries. It clears the nav pill by sitting below it, so the whole line is
   // available. DOTS as well as the width, so a longer wording ellipsises on one
   // line rather than quietly reintroducing the overlap.
-  lv_obj_t* hint = make_boxed_label(s_group, &lv_font_montserrat_14, kColorMuted,
+  lv_obj_t* hint = make_boxed_label(s_group, kFontBody, kColorMuted,
                                     kScreenW - 2 * kEdgePad, LV_TEXT_ALIGN_CENTER);
   lv_label_set_long_mode(hint, LV_LABEL_LONG_MODE_DOTS);
   lv_label_set_text(hint, kRenameHint);
@@ -183,12 +183,12 @@ void build(lv_obj_t* scr) {
                            : kEdgePad + col * (kEntryW + kGridColGap);
     s_entries[i] = build_pill(
         s_group, kEntries[i].text, kEntryW, kEntryH, kColorText,
-        &lv_font_montserrat_24, on_entry,
+        kFontTitle, on_entry,
         reinterpret_cast<void*>(static_cast<uintptr_t>(kEntries[i].target)));
     lv_obj_set_pos(s_entries[i], x, kGridY + row * (kEntryH + kGridRowGap));
   }
 
-  s_footer = make_boxed_label(s_group, &lv_font_montserrat_14, kColorMuted,
+  s_footer = make_boxed_label(s_group, kFontBody, kColorMuted,
                               kScreenW - 2 * kEdgePad, LV_TEXT_ALIGN_CENTER);
   lv_obj_set_pos(s_footer, kEdgePad, kFooterY);
 

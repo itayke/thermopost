@@ -40,10 +40,10 @@ constexpr size_t kUriMax =
 // it is what the phone's Wi-Fi list will show, so a camera that will not focus
 // still leaves someone able to join by hand.
 constexpr int32_t kQrSize = 140;
-constexpr int32_t kQrY    = kHeadingY + kFont24H + 5;
+constexpr int32_t kQrY    = kHeadingY + kFontTitleH + 5;
 constexpr int32_t kNameGap = 6;
 constexpr int32_t kNameY  = kQrY + kQrSize + kNameGap;
-static_assert(kNameY + kFont14H <= kFooterY, "the network name runs into the footer");
+static_assert(kNameY + kFontBodyH <= kFooterY, "the network name runs into the footer");
 static_assert(kQrY >= kNavPillY + kNavPillH,
               "a centred code this high would sit beside the nav pill, not under it");
 
@@ -122,7 +122,7 @@ void build(lv_obj_t* scr) {
   lv_qrcode_set_quiet_zone(s_qr, true);
   lv_obj_set_pos(s_qr, (kScreenW - kQrSize) / 2, kQrY);
 
-  s_name = make_boxed_label(s_page.group, &lv_font_montserrat_14, kColorText,
+  s_name = make_boxed_label(s_page.group, kFontBody, kColorText,
                             kScreenW - 2 * kEdgePad, LV_TEXT_ALIGN_CENTER);
   lv_label_set_long_mode(s_name, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_pos(s_name, kEdgePad, kNameY);
