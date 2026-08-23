@@ -432,9 +432,7 @@ void refresh_test_label() {
 // Greyed and unclickable rather than hidden, so the reason it cannot be used stays
 // on screen next to it — the footer says which of the two reasons applies.
 void set_test_enabled(bool on) {
-  const lv_color_t tint = on ? kColorText : kColorMuted;
-  lv_obj_set_style_border_color(s_test, tint, LV_PART_MAIN);
-  lv_obj_set_style_text_color(s_test, tint, LV_PART_MAIN);
+  pill_set_color(s_test, on ? kColorText : kColorMuted);
   if (on) {
     lv_obj_add_flag(s_test, LV_OBJ_FLAG_CLICKABLE);
   } else {
@@ -448,9 +446,7 @@ void refresh_state() {
   // Amber when muted. A mute is a setting the user chose, not a fault — but it is
   // the setting most likely to be forgotten about, so it does not get to look
   // identical to the working state.
-  const lv_color_t tint = s.sound_enabled ? kColorText : kColorFault;
-  lv_obj_set_style_border_color(s_toggle, tint, LV_PART_MAIN);
-  lv_obj_set_style_text_color(s_toggle, tint, LV_PART_MAIN);
+  pill_set_color(s_toggle, s.sound_enabled ? kColorText : kColorFault);
 
   // The test follows the mute rather than overriding it. It exists to prove what
   // the alarm will do, and while the alarm is muted the truthful demonstration is

@@ -208,12 +208,16 @@ second is a setting. If the sensor is missing or the lead is pulled, the readout
 says so and the sampler keeps rescanning, so reseating the connector recovers
 without a reboot.
 
-The menu pill is espressopost's, scaled for a 320 px screen: an amber outlined
-capsule holding a hamburger glyph and the word *Menu* in a centred flex row.
-Outline, label and glyph all tint green under a finger. The glyph is painted as
-three 1 px bars rather than set as `LV_SYMBOL_BARS`, which the built-in font does
-carry — espressopost's reasoning applies here too: a painted glyph tints and scales
-with the layout instead of being pinned to whatever the font designer chose.
+The menu pill is espressopost's, scaled for a 320 px screen: a solid amber capsule
+holding a hamburger glyph and the word *Menu*, both knocked out in black, in a
+centred flex row. Every button on the device is built this way — a filled capsule
+in the control's own colour, its label in black — and a press darkens the fill
+rather than the label, so the two do not look like separate things reacting.
+
+The glyph is painted as three 1 px bars rather than set as `LV_SYMBOL_BARS`, which
+the built-in font does carry — espressopost's reasoning applies here too: a painted
+glyph tints and scales with the layout instead of being pinned to whatever the font
+designer chose.
 
 **The same pill is in the top-left corner of every screen**, showing a left
 chevron and *Back* everywhere but here. Same corner, same size, so the way out
@@ -243,12 +247,9 @@ the time and the total record count.
 ```
  (‹ Back)          North Tank
               rename from the setup page
-   ┌────────────────┐ ┌────────────────┐
-   │   Thresholds   │ │   Recording    │
-   └────────────────┘ └────────────────┘
-   ┌────────────────┐ ┌────────────────┐
-   │     Sound      │ │    Display     │
-   └────────────────┘ └────────────────┘
+   (   Thresholds   ) (    Recording   )
+
+   (      Sound     ) (     Display    )
           Tue 28 Jul   14:32   4213 records
 ```
 
@@ -260,7 +261,8 @@ the time and the total record count.
 | Display | temperature unit | that tapping the reading does this too |
 
 Every value is edited with espressopost's stepper — a caption, and `(-) value (+)`
-with two outline discs either side. It earns its place on a 2.8" panel because it is
+with two amber discs either side — the same capsule as every other button, at the
+aspect ratio that makes it a circle. It earns its place on a 2.8" panel because it is
 unmissable, needs no drag precision, and has no hit target smaller than a fingertip.
 Five things changed in the port, each forced by the data: the value is an `int16_t`
 (the range is −40…125 °C, signed and wider than a byte in °F), the suffix is a

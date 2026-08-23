@@ -46,7 +46,7 @@ constexpr lv_color_t kColorOk    = color(0x3FD07F);
 
 // The menu pill's amber, carried over from espressopost's presets screen so the
 // two devices' menu affordance reads the same.
-constexpr lv_color_t kColorMenu = color(0xC88036);
+constexpr lv_color_t kColorMenu = color(0xF37B02);
 
 // The stepper discs' amber, which happens to be the same one today. Its own name
 // rather than a reuse of kColorMenu so restyling the editors' controls doesn't drag
@@ -106,19 +106,25 @@ static_assert(kChartH > 0, "layout bands do not fit the panel height");
 static_assert(kStatusY + kStatusH + kEdgePad <= kScreenH, "status strip overflows");
 
 // --- Shared chrome ----------------------------------------------------------
-// Every tappable thing in this UI is an outlined capsule — no fills, so nothing
-// competes with the graph for attention, and the outline reads as a target at a
-// glance without needing a shadow.
-constexpr int32_t kPillStroke = 2;
+// Every tappable thing in this UI is a solid capsule: the control's own colour as
+// the fill, its label knocked out of it. An outline was quieter beside the graph,
+// but it also read as a decorated label rather than a target — a filled shape is
+// unmistakably a button from across the room, which is the distance this panel is
+// looked at from.
+//
+// The knocked-out label. Pure black rather than kColorBg: against a mid-bright
+// fill the label wants every count of contrast the panel can give it, and it is
+// not sitting on the background anyway.
+constexpr lv_color_t kColorPillText = color(0x000000);
 
-// The smallest a control may be to a finger. The drawn outline is allowed to be
+// The smallest a control may be to a finger. The drawn capsule is allowed to be
 // smaller — lv_obj_set_ext_click_area grows the hit area without touching the
 // chrome — but nothing should ask for more precision than this. A fingertip covers
 // roughly this much, and the contact patch is not where the user thinks they are
 // pointing (see the offset in touch.cpp).
 constexpr int32_t kMinTouchPx = 48;
 
-// How far a control's hit area must reach past its outline to meet kMinTouchPx.
+// How far a control's hit area must reach past its capsule to meet kMinTouchPx.
 // Driven by the smaller dimension, because ext_click_area is a single value applied
 // to all four sides.
 //

@@ -57,12 +57,6 @@ constexpr int32_t kGridColGap = 12;
 constexpr int32_t kGridRowGap = 14;
 constexpr int32_t kEntryW = (kScreenW - 2 * kEdgePad - kGridColGap) / kGridCols;
 constexpr int32_t kEntryH = 44;
-// Softly rounded rather than a full capsule. At 44 px a half-height radius turns the
-// pill into a lozenge whose ends eat into the label's space; these read as buttons in
-// a grid, which is what they are, and it separates them from the navigation chrome —
-// where the capsule shape is the affordance.
-constexpr int32_t kEntryRadius = 10;
-static_assert(kEntryRadius <= kEntryH / 2, "a radius past half the height is just a capsule");
 static_assert(kEntryCount % kGridCols == 0,
               "an odd entry leaves a hole in the grid; give it a full row or add one");
 
@@ -140,10 +134,6 @@ void build(lv_obj_t* scr) {
         s_group, kEntries[i].text, kEntryW, kEntryH, kColorText,
         &lv_font_montserrat_24, on_entry,
         reinterpret_cast<void*>(static_cast<uintptr_t>(kEntries[i].target)));
-    // build_pill makes a full capsule; these are grid buttons, so the corners come
-    // back in afterwards rather than threading a radius through every caller that
-    // does want a capsule.
-    lv_obj_set_style_radius(s_entries[i], kEntryRadius, LV_PART_MAIN);
     lv_obj_set_pos(s_entries[i], kEdgePad + col * (kEntryW + kGridColGap),
                    kGridY + row * (kEntryH + kGridRowGap));
   }

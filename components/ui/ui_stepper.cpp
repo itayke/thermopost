@@ -45,7 +45,7 @@ void stepper_plus(lv_event_t* e) {
   step_by(static_cast<StepperState*>(lv_event_get_user_data(e)), +1);
 }
 
-// One outline disc with a centred glyph. Same capsule as every other button here —
+// One filled disc with a centred glyph. Same capsule as every other button here —
 // a circle is just a capsule whose radius is half its side.
 lv_obj_t* build_disc(lv_obj_t* parent, const char* glyph, int32_t diam,
                      lv_event_cb_t cb, StepperState* st) {
@@ -57,7 +57,7 @@ lv_obj_t* build_disc(lv_obj_t* parent, const char* glyph, int32_t diam,
 
 lv_obj_t* build_stepper(lv_obj_t* parent, StepperState* st, const StepperCfg& cfg) {
   // Transparent container, sized by stepper_width/height to include each disc's
-  // extended click area — a parent cut to the outlines would clip taps in exactly
+  // extended click area — a parent cut to the discs would clip taps in exactly
   // the margin that exists to catch them.
   lv_obj_t* row = lv_obj_create(parent);
   lv_obj_set_size(row, stepper_width(cfg), stepper_height(cfg));

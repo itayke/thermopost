@@ -46,9 +46,11 @@ static_assert(kChevronW <= kGlyphW && kChevronStroke < kGlyphH,
 
 // A press darkens the control's own colour rather than swapping it for another
 // hue: the feedback should read as "this one, pushed in", and a jump to a
-// different colour reads as a change of meaning instead. Deep enough to be
-// obvious past a fingertip covering most of the pill.
-constexpr lv_opa_t kPressedDarken = LV_OPA_50;
+// different colour reads as a change of meaning instead. Shallower than the 50%
+// the outlined pills used — a whole capsule of fill changing tone is far louder
+// than a 2 px stroke doing it, and going deeper starves the black label of the
+// contrast it is knocked out of.
+constexpr lv_opa_t kPressedDarken = LV_OPA_30;
 
 lv_color_t pressed_tint(lv_color_t base) {
   return lv_color_darken(base, kPressedDarken);
@@ -74,9 +76,10 @@ void draw_nav_glyph(lv_event_t* e) {
   lv_obj_get_coords(obj, &coords);
   const int32_t cx = coords.x1 + lv_area_get_width(&coords) / 2;
   const int32_t cy = coords.y1 + lv_area_get_height(&coords) / 2;
-  const lv_color_t tint = (lv_obj_get_state(pill->btn) & LV_STATE_PRESSED)
-                              ? pressed_tint(kColorMenu)
-                              : kColorMenu;
+  // Constant across states, like the word beside it: the capsule's fill is what a
+  // press darkens, and a glyph that dimmed along with it would read as two
+  // separate things reacting.
+  const lv_color_t tint = kColorPillText;
 
   // LVGL multiplies LV_STYLE_OPA up the parent chain for the widgets it draws
   // itself, but a hand-rolled draw call is outside that — so a screen cross-fade
@@ -182,24 +185,22 @@ lv_obj_t* build_pill(lv_obj_t* parent, const char* text, int32_t w, int32_t h,
                      void* user_data) {
   lv_obj_t* b = lv_button_create(parent);
   lv_obj_set_size(b, w, h);
+  // Half the height: a capsule, whatever the caller's aspect ratio. A square gets a
+  // circle out of the same line, which is what the stepper's discs are.
   lv_obj_set_style_radius(b, h / 2, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_set_style_shadow_width(b, 0, LV_PART_MAIN);
-  lv_obj_set_style_border_width(b, kPillStroke, LV_PART_MAIN);
-  lv_obj_set_style_border_opa(b, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_border_width(b, 0, LV_PART_MAIN);
   lv_obj_set_ext_click_area(b, ext_click_for(w, h));
+  pill_set_color(b, color);
 
-  // Outline and text in one go, in both states. text_color is inheritable, so a
-  // label parented *directly* on the capsule picks up both variants without needing
-  // its own pair — but only directly: inheritance stops at the first ancestor that
-  // has the property, and the default theme puts a text_color on every plain
+  // One text colour, no pressed variant — the fill carries the press. text_color is
+  // inheritable, so a label parented *directly* on the capsule picks it up without
+  // needing its own — but only directly: inheritance stops at the first ancestor
+  // that has the property, and the default theme puts a text_color on every plain
   // container, so a wrapper in between silently swallows this. That is why
   // build_nav_pill lays its contents out on the button itself.
-  const lv_color_t pressed = pressed_tint(color);
-  lv_obj_set_style_border_color(b, color, LV_PART_MAIN);
-  lv_obj_set_style_text_color(b, color, LV_PART_MAIN);
-  lv_obj_set_style_border_color(b, pressed, kSelPressed);
-  lv_obj_set_style_text_color(b, pressed, kSelPressed);
+  lv_obj_set_style_text_color(b, kColorPillText, LV_PART_MAIN);
 
   // The default theme grows a pressed button by a few pixels and lays a black
   // recolour over it. Both are overridden here rather than switched off in
@@ -209,8 +210,8 @@ lv_obj_t* build_pill(lv_obj_t* parent, const char* text, int32_t w, int32_t h,
   lv_obj_set_style_transform_width(b, 0, kSelPressed);
   lv_obj_set_style_transform_height(b, 0, kSelPressed);
   // Dropped as well, because a recolour applies to what LVGL draws but not to the
-  // hand-painted nav glyph — leaving it on would darken the outline and the word
-  // while the burger stayed bright.
+  // hand-painted nav glyph — leaving it on would darken the fill and the word while
+  // the burger stayed as it was.
   lv_obj_set_style_recolor_opa(b, LV_OPA_TRANSP, kSelPressed);
 
   if (on_tap != nullptr) lv_obj_add_event_cb(b, on_tap, LV_EVENT_CLICKED, user_data);
@@ -226,6 +227,11 @@ lv_obj_t* build_pill(lv_obj_t* parent, const char* text, int32_t w, int32_t h,
 
 lv_obj_t* pill_label(lv_obj_t* pill) { return lv_obj_get_child(pill, 0); }
 
+void pill_set_color(lv_obj_t* pill, lv_color_t color) {
+  lv_obj_set_style_bg_color(pill, color, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(pill, pressed_tint(color), kSelPressed);
+}
+
 void build_nav_pill(lv_obj_t* parent, NavPill* pill, NavGlyph glyph, const char* text,
                     lv_event_cb_t on_tap) {
   *pill = {};
@@ -237,8 +243,8 @@ void build_nav_pill(lv_obj_t* parent, NavPill* pill, NavGlyph glyph, const char*
   // On the button and not in a wrapper container, deliberately. A wrapper is the
   // tidier structure and it costs the label its colour: text_color is inheritable,
   // inheritance stops at the first ancestor that sets it, and the default theme
-  // gives every plain container one — so the word came out in the theme's near-black
-  // on a near-black background, i.e. invisible.
+  // gives every plain container one — so the word came out in the theme's colour
+  // rather than the capsule's.
   pill->btn = build_pill(parent, nullptr, kNavPillW, kNavPillH, kColorMenu,
                          &lv_font_montserrat_14, on_tap, nullptr);
   lv_obj_set_pos(pill->btn, kEdgePad, kNavPillY);

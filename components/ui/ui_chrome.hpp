@@ -34,7 +34,9 @@ lv_obj_t* make_boxed_label(lv_obj_t* parent, const lv_font_t* font, lv_color_t c
 // not scroll a layout that is positioned absolutely.
 lv_obj_t* build_group(lv_obj_t* scr);
 
-// An outlined capsule with a centred label — the shape of every button here.
+// A capsule filled with `color`, its label knocked out in kColorPillText — the
+// shape of every button here, and always a capsule: the radius is half the height,
+// so a square caller (the stepper's discs) gets a circle out of the same rule.
 // `text` may be nullptr for a caller that wants to fill the capsule itself.
 // `on_tap` fires on LV_EVENT_CLICKED with `user_data`.
 //
@@ -49,6 +51,11 @@ lv_obj_t* build_pill(lv_obj_t* parent, const char* text, int32_t w, int32_t h,
 // The label inside a pill built above, so a caller can repaint a toggle's text
 // without tracking two handles. Only meaningful for a pill built *with* text.
 lv_obj_t* pill_label(lv_obj_t* pill);
+
+// Repaint a built pill, resting and pressed together. For the controls whose colour
+// is state rather than decoration — a muted toggle, a disabled button — so they
+// restate their colour and not the whole fill/press recipe.
+void pill_set_color(lv_obj_t* pill, lv_color_t color);
 
 // The top-left navigation pill. Both glyphs are painted rather than taken from the
 // font: a painted glyph tints and scales with the layout instead of being pinned to
