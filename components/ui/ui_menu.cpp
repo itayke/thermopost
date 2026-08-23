@@ -51,6 +51,10 @@ static_assert(4 + kEntryCount <= nav::kMaxFadeWidgets,
 // bottom. Two columns rather than one because four stacked pills tall enough to hit
 // reliably do not fit under a heading on a 240 px panel.
 constexpr int32_t kHintY = kHeadingY + kFont24H + 2;
+// The hint spans the full width, so it has to start below the nav pill rather than
+// beside it — a full-width line at the heading's height would run under the pill.
+static_assert(kHintY >= kNavPillY + kNavPillH,
+              "a full-width hint at this height would run under the nav pill");
 
 constexpr int32_t kGridCols = 2;
 
@@ -159,10 +163,16 @@ void build(lv_obj_t* scr) {
   lv_label_set_long_mode(s_name, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_pos(s_name, kEdgePad + kNavPillW, kHeadingY);
 
+  // Full width, not the heading's band: the hint is longer than 148 px at this
+  // font and wrapped onto a second line that sat on top of the first row of
+  // entries. It clears the nav pill by sitting below it, so the whole line is
+  // available. DOTS as well as the width, so a longer wording ellipsises on one
+  // line rather than quietly reintroducing the overlap.
   lv_obj_t* hint = make_boxed_label(s_group, &lv_font_montserrat_14, kColorMuted,
-                                    kHeadingW, LV_TEXT_ALIGN_CENTER);
+                                    kScreenW - 2 * kEdgePad, LV_TEXT_ALIGN_CENTER);
+  lv_label_set_long_mode(hint, LV_LABEL_LONG_MODE_DOTS);
   lv_label_set_text(hint, kRenameHint);
-  lv_obj_set_pos(hint, kEdgePad + kNavPillW, kHintY);
+  lv_obj_set_pos(hint, kEdgePad, kHintY);
 
   for (int i = 0; i < kEntryCount; ++i) {
     const int32_t col = i % kGridCols;
