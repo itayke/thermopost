@@ -5,6 +5,7 @@ idf_component_register(
         "include"
     PRIV_REQUIRES
         alert       # sample_flags() compares against alert::Thresholds
+        cloud       # nudge the uploader when a record lands
         esp_timer   # uptime_us stamp
         sensor
         settings

@@ -114,7 +114,7 @@ are cosmetic and never go away.
 ## Usage
 
 Flashing brings the board up through `display → nvs → storage → settings → i2c →
-sensor → touch → audio → recorder → ui` and draws the main screen:
+sensor → touch → audio → recorder → ui → shell → cloud` and draws the main screen:
 
 ```
  (☰ Menu)      72.4°F            ↑ 86.0
@@ -198,7 +198,7 @@ answer three different questions.
 |---|---|
 | `live` | appended since boot — **frozen means logging has stopped** |
 | `total` | ever written, across every boot and rotation |
-| `uploaded` | how far the Sheet has caught up (`--` until M8) |
+| `uploaded` | how far the Sheet has caught up (`--` when no endpoint is set) |
 
 `live` counts completed writes, not attempts. That distinction is the whole point:
 a counter that keeps climbing while the filesystem is full would defeat the only
@@ -363,6 +363,80 @@ A settings reset keeps the name. It is the post's identity, not a tunable — a
 device that forgets which tank it watches because someone reset the alarm band
 would be a surprise.
 
+### Network and the clock
+
+The post has no battery-backed RTC, so the radio and the wall clock come up
+together: SNTP over Wi-Fi is the *only* source of time on this board. That is why
+they are one component. Until the first sync every record carries `epoch_s = 0`
+and the screens read "clock not set"; the moment a link comes up the clock line
+starts ticking and records begin carrying real epochs.
+
+Credentials go in over the serial console for now — the captive portal that
+replaces this is the next piece of M8, and it will call exactly the same setter:
+
+```
+post> cloud wifi "North Tank AP" hunter2   # store and connect
+post> cloud status                          # link, address, RSSI, clock
+post> cloud forget                          # erase and go idle
+```
+
+The credentials are kept by the Wi-Fi driver in NVS, not by this component, so
+there is one copy and it is the one the radio actually uses. They survive a
+reflash of the app, which is worth knowing when a post seems to join a network
+nobody configured it for.
+
+**Reconnection never gives up, it only slows down** — 2 s, then doubling to a
+five-minute ceiling, forever. espressopost stopped after six tries, which was
+fine for a device on a counter with its owner beside it; a post sits on a tank
+and the AP it wants may be rebooting, or out of range while someone moves a
+pallet. Nothing is lost by waiting: records keep being written locally, and both
+the clock and the upload backlog recover on their own when the link returns. The
+status word turns from `connecting` to `offline` after three failed attempts,
+because past that "connecting" stops being the honest word — but it is not a
+terminal state and nothing has stopped trying.
+
+### Mirroring to a Sheet
+
+Every record is mirrored into a Google Sheet through an Apps Script Web App —
+no server, no billing, and the full setup is in
+[`tools/cloud_apps_script.md`](tools/cloud_apps_script.md). Point a post at it
+with `cloud url https://…/exec`; the token has a default, so that one line is
+usually the whole configuration.
+
+Upload is a **durable queue, not a fire-and-forget send**. A high-water mark in
+NVS records the absolute index of the next record to upload, and a background
+task drains everything above it whenever the link is up. Nothing is lost by
+being offline: records go to flash first and the backlog is sent whenever the
+network returns, which is why the reconnect policy can afford to be patient. The
+mark only advances on a confirmed `"ok":true`, so a response lost in transit
+costs a repeated batch rather than a hole in the history.
+
+**The dedupe key is `device` + `index`, and that is a fleet decision.** Each post
+numbers its records from zero, so an index alone collides across a group on the
+first day. The post's *name* can't be the key either — it is renameable from the
+config form by design, and a key that changes when someone fixes a typo is not a
+key. So the key is the board's MAC, which never changes, and the name rides along
+as a display column the Sheet can be filtered by. `cloud status` prints the
+device id, which is how a row gets matched back to a box on a wall.
+
+One consequence worth stating: a rename retags the queued backlog, because
+records are labelled at upload rather than at write. That is the behaviour you
+want — renaming a post should relabel that post, not leave a seam in the middle
+of its history.
+
+**Rotation can outrun the uploader**, and the code says so out loud. A post that
+is offline long enough for the log to pass its 100k-record cap will have its
+oldest records dropped before they were ever sent. The read reports where it
+actually started rather than where it was asked to, so the gap becomes a gap —
+logged once, permanent — instead of stalling every later record behind a record
+that no longer exists.
+
+The JSON is built by `cloud_json.cpp`, which has no IDF includes and is
+host-tested against exact strings. Temperatures are formatted from the stored
+hundredths with integer arithmetic, never through a float, so `20.90` is
+`20.90`; an interval with no valid reading sends `null` rather than a sentinel
+that a chart would happily plot as -327.68 °C.
+
 ### The hardware bring-up probe
 
 A separate diagnostic answers the questions the drivers depend on. It is off by
@@ -398,16 +472,20 @@ Two caveats:
 
 ## Host tests
 
-The alarm decision logic is IDF-free by design, so it runs on the dev machine:
+Two pieces are IDF-free by design and run on the dev machine: the alarm decision
+logic, and the JSON the uploader puts on the wire.
 
 ```sh
 ./tests/host/run.sh                # build + run all cases
 ./tests/host/run.sh "[hysteresis]" # filter by tag
+./tests/host/run.sh "[json]"       # …or by component
 ```
 
-Catch2 v2 is vendored under `tests/host/third_party/` (no install). Design rule:
-if a test ever needs an IDF include in `alert_logic.*`, the test isn't wrong —
-the code is. Push the IDF dependency into the `alert.cpp` wrapper instead.
+Catch2 v2 is vendored under `tests/host/third_party/` (no install), and its
+`main()` sits in its own `main.cpp` so every `test_*.cpp` is a plain source file
+— adding one costs a line of `CMakeLists.txt`. Design rule: if a test ever needs
+an IDF include in `alert_logic.*` or `cloud_json.*`, the test isn't wrong, the
+code is. Push the IDF dependency into the wrapper beside it.
 
 ## Project layout
 
@@ -418,6 +496,7 @@ the code is. Push the IDF dependency into the `alert.cpp` wrapper instead.
 ├── main/                   boot sequencer, board_pins, opt-in bring-up probe
 ├── components/
 │   ├── board_i2c/          the one shared I²C bus (touch + codec + sensor)
+│   ├── cloud/              Wi-Fi + SNTP clock + the durable upload queue
 │   ├── audio/              ES8311 + I²S alarm tone (the only thing that makes noise)
 │   ├── display/            ILI9341 over SPI + LVGL + LEDC backlight
 │   ├── sensor/             MCP9808 driver + 1 Hz sampling task
@@ -426,7 +505,9 @@ the code is. Push the IDF dependency into the `alert.cpp` wrapper instead.
 │   ├── ui/                 theme, shared chrome, screen fade engine, the screens
 │   ├── storage/            LittleFS append-log + rotation with stable absolute indices
 │   ├── settings/           NVS-backed name / interval / band / units / sound
+│   ├── shell/              the USB serial REPL commands are registered into
 │   └── alert/              alarm decision logic (IDF-free, host-tested)
+├── tools/                  the Apps Script sink for the Sheet
 └── tests/host/             Catch2 unit tests, no IDF
 ```
 
@@ -458,7 +539,7 @@ transaction (a file rename plus an NVS write), the intent is journalled first an
 **Time comes from Wi-Fi.** This board has no battery-backed RTC, so SNTP sets the
 system clock and the ESP32's own RTC timer holds it (including across deep
 sleep). Records written before the first sync carry `epoch_s = 0`, which means
-"order by `uptime_us` instead". A full power cycle loses the clock until Wi-Fi
+"order by `uptime_s` instead". A full power cycle loses the clock until Wi-Fi
 returns.
 
 ## Status
@@ -475,7 +556,9 @@ returns.
 | ✅ Built | `recorder` + `ui` — one record per interval, graph backfilled from the log on boot, main screen with readout / chart / status strip |
 | ✅ Built | menu hub + four settings pages, ported stepper with coupled bounds, cross-fade between screens |
 | ✅ Verified | `audio` — ES8311 over I²S, beeping alarm tone out of the speaker, driven from the Sound page's test button |
-| ⬜️ Not started | alerts (the state machine's wiring and visuals), cloud + config service, power |
+| ✅ Built | `cloud` + `shell` — Wi-Fi with unbounded backoff, SNTP clock, `cloud` serial command |
+| ✅ Built | the upload queue — batched POSTs to Apps Script, NVS high-water mark, host-tested JSON |
+| ⬜️ Not started | alerts (the state machine's wiring and visuals), the rest of M8 (captive portal, config form, mDNS), power |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
 power. Each step ends at something flashable and observable. (Sensor jumped

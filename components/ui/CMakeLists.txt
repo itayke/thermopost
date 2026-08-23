@@ -13,6 +13,7 @@ idf_component_register(
     PRIV_REQUIRES
         alert           # thresholds, for the band lines and the readout tint
         audio           # the Sound page's alarm test
+        cloud           # the status strip's uploaded counter
         display         # the LVGL lock and the display handle
         recorder        # the graph's history ring
         sensor          # the live reading

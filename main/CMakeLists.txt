@@ -21,9 +21,11 @@ idf_component_register(
         nvs_flash
         audio
         board_i2c
+        cloud
         display
         recorder
         sensor
+        shell
         storage
         settings
         touch

@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 
 #include "alert_logic.hpp"
+#include "cloud.hpp"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "sensor.hpp"
@@ -192,6 +193,12 @@ void write_one() {
     ESP_LOGW(kTag, "append failed: %s", esp_err_to_name(err));
     return;
   }
+
+  // Only after the append succeeded, for the same reason the counter below is:
+  // there is now a record on disk for the uploader to find. A failed append has
+  // nothing to offer it, and waking it to discover that would spend a TLS
+  // handshake on a no-op.
+  cloud::notify_new_record();
 
   // Only now, because this counter is shown on screen as the answer to "is it
   // still recording?". Incrementing it before the append would make it climb

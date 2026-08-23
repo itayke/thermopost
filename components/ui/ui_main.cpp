@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "alert_logic.hpp"
+#include "cloud.hpp"
 #include "display.hpp"
 #include "esp_log.h"
 #include "recorder.hpp"
@@ -88,11 +89,16 @@ constexpr int32_t kReadoutUnitGap = 2;
 constexpr int32_t kStatusW = kScreenW - 2 * kEdgePad;
 constexpr int32_t kStatusRow2Y = kStatusY + kFont14H;
 
-// Cloud sync lands in M8; until then there is no high-water mark to report and
-// this stands in for it. Deliberately not "0" — zero uploaded is a claim that the
-// uploader exists and has sent nothing, which would be a bug report rather than
-// the truth, which is that there is no uploader yet.
+// Shown in place of the high-water mark while no Sheet endpoint is configured.
+// Deliberately not "0" — zero uploaded is a claim that an uploader is running and
+// has sent nothing, which reads as a fault. The truth is that there is nowhere to
+// send to, and a dash says that without inviting a bug report.
 constexpr const char* kNotUploaded = "--";
+
+// Ten digits of uint32_t plus the terminator. The counter is an absolute record
+// index and only ever grows, so it is worth sizing for the whole range rather
+// than for what a bench session reaches.
+constexpr size_t kUploadedTextMax = 11;
 
 // --- Chart ------------------------------------------------------------------
 constexpr uint32_t kChartHDiv = 4;
@@ -330,9 +336,17 @@ void refresh(lv_timer_t* timer) {
   //   live     — appended since boot; frozen means logging has stopped
   //   total    — ever written, the absolute index cloud sync counts against
   //   uploaded — how far the Sheet has caught up (M8)
+  const cloud::Status net = cloud::status();
+  char uploaded[kUploadedTextMax];
+  if (net.endpoint_set) {
+    std::snprintf(uploaded, sizeof(uploaded), "%lu",
+                  static_cast<unsigned long>(net.uploaded));
+  } else {
+    std::snprintf(uploaded, sizeof(uploaded), "%s", kNotUploaded);
+  }
   std::snprintf(text, sizeof(text), "#recs live %lu  total %lu  uploaded %s",
                 static_cast<unsigned long>(recorder::written()),
-                static_cast<unsigned long>(recorder::total()), kNotUploaded);
+                static_cast<unsigned long>(recorder::total()), uploaded);
   lv_label_set_text(s_counter_lbl, text);
 
   // --- the graph, only when something it draws from has actually changed

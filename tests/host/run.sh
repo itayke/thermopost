@@ -10,4 +10,4 @@ if [[ ! -d build ]]; then
     cmake -S . -B build -GNinja >/dev/null
 fi
 cmake --build build >/dev/null
-./build/test_alert "$@"
+./build/test_host "$@"
