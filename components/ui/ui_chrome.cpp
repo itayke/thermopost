@@ -1,10 +1,14 @@
 #include "ui_chrome.hpp"
 
+#include "ui_nav.hpp"
+
 #include <cstdlib>  // setenv
 #include <ctime>
 
 namespace thermopost::ui {
 namespace {
+
+void on_page_back(lv_event_t*) { nav::go(nav::Screen::Menu); }
 
 // --- Wall clock -------------------------------------------------------------
 // SNTP lands UTC in the system clock (there is no RTC chip on this board), and
@@ -271,6 +275,20 @@ void build_nav_pill(lv_obj_t* parent, NavPill* pill, NavGlyph glyph, const char*
   lv_obj_t* lbl = lv_label_create(pill->btn);
   lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, LV_PART_MAIN);
   lv_label_set_text(lbl, text);
+}
+
+void build_page_chrome(lv_obj_t* scr, const char* title, PageChrome* c) {
+  c->group = build_group(scr);
+  build_nav_pill(c->group, &c->back, NavGlyph::Chevron, "Back", on_page_back);
+
+  c->heading = make_boxed_label(c->group, &lv_font_montserrat_24, kColorText, kHeadingW,
+                                LV_TEXT_ALIGN_CENTER);
+  lv_label_set_text(c->heading, title);
+  lv_obj_set_pos(c->heading, kEdgePad + kNavPillW, kHeadingY);
+
+  c->footer = make_boxed_label(c->group, &lv_font_montserrat_14, kColorMuted,
+                               kScreenW - 2 * kEdgePad, LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_pos(c->footer, kEdgePad, kFooterY);
 }
 
 }  // namespace thermopost::ui

@@ -1,0 +1,8 @@
+## Managed dependencies for the `cloud` component.
+
+dependencies:
+  ## mDNS responder. Without it a post is only reachable at whatever address DHCP
+  ## handed it, and "read the lease table to change a threshold" is not a feature
+  ## anyone would use — with a fleet it is the difference between walking every
+  ## post by name and hunting five IPs.
+  espressif/mdns: "^1.8.0"

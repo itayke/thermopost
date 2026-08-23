@@ -35,10 +35,11 @@ struct Entry {
 };
 
 constexpr Entry kEntries[] = {
-    {"Thresholds", nav::Screen::Thresholds},
-    {"Recording",  nav::Screen::Recording},
-    {"Sound",      nav::Screen::Sound},
-    {"Display",    nav::Screen::Display},
+    {"Thresholds",  nav::Screen::Thresholds},
+    {"Recording",   nav::Screen::Recording},
+    {"Sound",       nav::Screen::Sound},
+    {"Display",     nav::Screen::Display},
+    {"Network",     nav::Screen::Network},
 };
 constexpr int kEntryCount = static_cast<int>(sizeof(kEntries) / sizeof(kEntries[0]));
 // Back pill, name, hint, footer, plus one per entry.
@@ -50,7 +51,6 @@ static_assert(4 + kEntryCount <= nav::kMaxFadeWidgets,
 // bottom. Two columns rather than one because four stacked pills tall enough to hit
 // reliably do not fit under a heading on a 240 px panel.
 constexpr int32_t kHintY = kHeadingY + kFont24H + 2;
-constexpr int32_t kFooterY = kScreenH - kEdgePad - kFont14H;
 
 constexpr int32_t kGridCols = 2;
 
@@ -81,14 +81,15 @@ constexpr int32_t kEntryW = (kScreenW - 2 * kEdgePad - kGridColGap) / kGridCols;
 static_assert(kEntryW > kEntryH,
               "a cell taller than it is wide takes its hit margin from the width, "
               "which kEntryExtClick above assumes it never does");
-static_assert(kEntryCount % kGridCols == 0,
-              "an odd entry leaves a hole in the grid; give it a full row or add one");
-
 // The grid is centred in whatever is left between the hint and the footer rather than
 // pinned below the hint, so changing kEntryH or adding a row rebalances the screen
 // instead of piling the slack at the bottom.
 constexpr int32_t kGridTop = kHintY + kFont14H;
-constexpr int32_t kGridRows = kEntryCount / kGridCols;
+// Rounded up, because an odd entry count is allowed and takes a row of its own,
+// centred. The alternatives are worse: a hole beside it reads as a button that
+// failed to draw, and padding the list with a page nobody asked for is a page
+// nobody asked for.
+constexpr int32_t kGridRows = (kEntryCount + kGridCols - 1) / kGridCols;
 constexpr int32_t grid_height(int32_t rows) {
   return rows * kEntryH + (rows - 1) * kGridRowGap;
 }
@@ -96,10 +97,11 @@ constexpr int32_t kGridH = grid_height(kGridRows);
 constexpr int32_t kGridY = kGridTop + (kFooterY - kGridTop - kGridH) / 2;
 static_assert(kGridY >= kGridTop, "the entry grid does not fit between the hint and the footer");
 
-// M8's Connections and About pages take this to three rows. Checking the taller grid
-// against the same band now means those pages cost a row in kEntries[] and nothing
-// else — the alternative is discovering the squeeze while writing a screen, which is
-// where a hint line quietly gets deleted to make room.
+// Network took the grid to three rows, which this had already checked before the
+// page existed — so it cost a row in kEntries[] and nothing else. An About page would
+// fill the gap beside it at the same price. Checking a taller grid than is built is
+// what keeps the squeeze from being discovered while writing a screen, which is where
+// a hint line quietly gets deleted to make room.
 constexpr int32_t kGridRowsPlanned = 3;
 static_assert(kGridTop + grid_height(kGridRowsPlanned) <= kFooterY,
               "a third row of entries would not fit under the hint");
@@ -165,12 +167,15 @@ void build(lv_obj_t* scr) {
   for (int i = 0; i < kEntryCount; ++i) {
     const int32_t col = i % kGridCols;
     const int32_t row = i / kGridCols;
+    // A lone final entry centres on the screen rather than sitting in column 0.
+    const bool lone = (i == kEntryCount - 1) && (kEntryCount % kGridCols == 1);
+    const int32_t x = lone ? (kScreenW - kEntryW) / 2
+                           : kEdgePad + col * (kEntryW + kGridColGap);
     s_entries[i] = build_pill(
         s_group, kEntries[i].text, kEntryW, kEntryH, kColorText,
         &lv_font_montserrat_24, on_entry,
         reinterpret_cast<void*>(static_cast<uintptr_t>(kEntries[i].target)));
-    lv_obj_set_pos(s_entries[i], kEdgePad + col * (kEntryW + kGridColGap),
-                   kGridY + row * (kEntryH + kGridRowGap));
+    lv_obj_set_pos(s_entries[i], x, kGridY + row * (kEntryH + kGridRowGap));
   }
 
   s_footer = make_boxed_label(s_group, &lv_font_montserrat_14, kColorMuted,

@@ -333,8 +333,8 @@ took part. A transparent click-eater covers the screen for the swap's duration, 
 stray tap can't land on a page that is already half gone.
 
 Each page re-reads its values at the midpoint, while it is still hidden. That is what
-will keep a page opened after the web form (M8) wrote the same setting from showing —
-and then clobbering — a stale number. Both paths go through the same
+keeps a page opened while the web form writes the same setting from showing — and then
+clobbering — a stale number. Both paths go through the same
 `settings::set_*` setters, so NVS stays the single source of truth.
 
 ### The post's name
@@ -347,15 +347,16 @@ no user action and answers "which of these five identical boxes am I configuring
 
 The name is the one setting the device menu will *not* change. It is the only
 free-text field, and an on-screen keyboard on a 2.8" panel is the worst possible
-way to enter one, so it belongs to the web config form (M8) — which is being
-filled in from a phone or laptop with a real keyboard anyway. Everything else is
-a number or a toggle and will be editable from both.
+way to enter one, so it belongs to the web config form — which is being filled
+in from a phone or laptop with a real keyboard anyway. Everything else is a
+number or a toggle and is editable from both.
 
 24 characters, printable ASCII. The length is the status strip's share of a
 320 px line; the ASCII restriction is not stylistic — LVGL's built-in Montserrat
 covers `0x20-0x7F`, `°`, `•` and a fixed FontAwesome subset, so an accented
 letter or an emoji renders as a blank box on the very screen the name exists to
-label. It also has to survive slugification into an mDNS hostname later. Both
+label. It also has to survive slugification into an mDNS hostname — "North
+Fermenter #3" becomes `north-fermenter-3.local`. Both
 limits are enforced in `settings::set_name()` rather than at the form, because a
 submitted value can't be trusted to have honoured its own `maxlength`.
 
@@ -371,12 +372,13 @@ they are one component. Until the first sync every record carries `epoch_s = 0`
 and the screens read "clock not set"; the moment a link comes up the clock line
 starts ticking and records begin carrying real epochs.
 
-Credentials go in over the serial console for now — the captive portal that
-replaces this is the next piece of M8, and it will call exactly the same setter:
+Credentials normally arrive through the captive portal below. The serial console
+is the same path, not a lesser one — both call `cloud::set_credentials`:
 
 ```
 post> cloud wifi "North Tank AP" hunter2   # store and connect
-post> cloud status                          # link, address, RSSI, clock
+post> cloud status                          # link, address, host, RSSI, clock
+post> cloud portal                          # reopen the setup AP
 post> cloud forget                          # erase and go idle
 ```
 
@@ -394,6 +396,57 @@ the clock and the upload backlog recover on their own when the link returns. The
 status word turns from `connecting` to `offline` after three failed attempts,
 because past that "connecting" stops being the honest word — but it is not a
 terminal state and nothing has stopped trying.
+
+### The config form, and why it outlives provisioning
+
+An unprovisioned post comes up as an **open access point named after itself** —
+`Post-A1B2` until someone renames it — with a DNS responder that answers every
+lookup with its own address. A phone joins it, the OS captive check fails against
+the wildcard handler, and the setup form pops without anyone typing an address.
+That much is espressopost's portal, ported.
+
+**What is different here is the lifetime.** espressopost's HTTP server existed only
+while the setup AP was up: the first `GOT_IP` tore down the AP, the DNS responder
+and the server together, because provisioning was all the form ever did. Here the
+same form is also where thresholds, the interval and the post's name are edited, so
+that model would mean rejoining a setup AP to adjust a number. The two halves are
+therefore split:
+
+| | lifetime |
+|---|---|
+| the HTTP server and the form | the device's whole life, on every interface |
+| the SoftAP and the DNS hijack | until credentials land, then gone |
+
+One server serves both, because it binds `INADDR_ANY` — the AP is a *way to reach*
+the form, not a second copy of it. After provisioning the post is reachable at
+`http://<name>.local/` over the LAN, and the Network screen shows the raw IP
+beside the `.local` name because some networks drop multicast and a post that could
+only offer a name it can't resolve has no address to give at all.
+
+The form carries every setting, each **pre-filled from the current value**, so it
+doubles as a way to read a post's configuration. The token is the one exception and
+is never echoed back. Two deliberate choices in it:
+
+- **Temperatures are always in °C**, whatever the screen is set to show. The stored
+  value is hundredths of a °C; a form that rendered °F would have to interpret its
+  own numbers in whichever unit was selected *when the page was drawn*, and a unit
+  change submitted alongside a threshold change would be genuinely ambiguous. The
+  unit select on the form sets what the panel displays and nothing else.
+- **Re-submitting the network you are already on does nothing.** The field comes back
+  prefilled, and re-applying credentials drops the link — so nudging a threshold from
+  a browser would otherwise cost a reconnect every time.
+
+Both write paths — form and menu — go through the same `settings::set_*` setters, so
+NVS stays the single source of truth. One loose end accepted rather than solved: a
+menu page left open while the form writes the same setting shows a stale value until
+it is re-entered. Screens re-read on show, which covers the realistic case; a change
+bus would be over-engineering for a single-user device.
+
+Worth being clear-eyed about the tradeoff: an always-listening HTTP server that
+writes settings, on plain HTTP, with no auth. On a home or brewery LAN that is the
+same exposure the setup AP already accepts, and the blast radius is a temperature
+threshold. It should not grow anything reachable from outside the LAN without
+revisiting that.
 
 ### Mirroring to a Sheet
 
@@ -558,7 +611,8 @@ returns.
 | ✅ Verified | `audio` — ES8311 over I²S, beeping alarm tone out of the speaker, driven from the Sound page's test button |
 | ✅ Built | `cloud` + `shell` — Wi-Fi with unbounded backoff, SNTP clock, `cloud` serial command |
 | ✅ Built | the upload queue — batched POSTs to Apps Script, NVS high-water mark, host-tested JSON |
-| ⬜️ Not started | alerts (the state machine's wiring and visuals), the rest of M8 (captive portal, config form, mDNS), power |
+| ✅ Built | the captive portal, the always-on config form, mDNS, and the Network screen |
+| ⬜️ Not started | alerts (the state machine's wiring and visuals), power |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
 power. Each step ends at something flashable and observable. (Sensor jumped
@@ -604,6 +658,6 @@ state machine and M9's RTC-memory mirror an obvious place to attach.
   to go back to once the alarms are proven.
 - **Time zone.** The displayed clock renders in a compile-time POSIX zone string in
   [`ui_chrome.cpp`](components/ui/ui_chrome.cpp) — currently espressopost's, since
-  the two share a bench. It belongs in `settings` once the config form (M8) can
-  carry it; until then relocating a post is a one-string change. Nothing stored is
+  the two share a bench. It belongs in `settings` and on the config form, which now
+  exists and could carry it; until then relocating a post is a one-string change. Nothing stored is
   affected either way: every record carries UTC.

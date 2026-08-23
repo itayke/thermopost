@@ -12,6 +12,7 @@
 #include "sensor.hpp"
 #include "settings.hpp"
 #include "ui_chrome.hpp"
+#include "ui_network.hpp"
 #include "ui_menu.hpp"
 #include "ui_nav.hpp"
 #include "ui_settings.hpp"
@@ -335,7 +336,7 @@ void refresh(lv_timer_t* timer) {
   // Three different questions, which is why one number was not enough:
   //   live     — appended since boot; frozen means logging has stopped
   //   total    — ever written, the absolute index cloud sync counts against
-  //   uploaded — how far the Sheet has caught up (M8)
+  //   uploaded — how far the Sheet has caught up
   const cloud::Status net = cloud::status();
   char uploaded[kUploadedTextMax];
   if (net.endpoint_set) {
@@ -581,6 +582,7 @@ esp_err_t init() {
   build_screen(scr);
   menu_screen::build(scr);
   settings_screen::build_all(scr);
+  network_screen::build(scr);
   nav::start();
 
   refresh(nullptr);  // paint real values before the first frame, not placeholders

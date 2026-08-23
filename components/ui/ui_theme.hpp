@@ -185,4 +185,10 @@ constexpr int32_t kHeadingDx = kHeadingCx - kScreenW / 2;
 static_assert(kHeadingCx - kHeadingW / 2 >= kEdgePad + kNavPillW,
               "a centred heading would overlap the nav pill");
 
+// One line of small text along the bottom of every screen but the main one. Here
+// rather than in each page's own file because three of them had derived the same
+// expression independently, and a fourth would have made it a convention nobody
+// had written down.
+constexpr int32_t kFooterY = kScreenH - kEdgePad - kFont14H;
+
 }  // namespace thermopost::ui

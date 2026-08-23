@@ -1,6 +1,7 @@
 #include "cloud.hpp"
 
 #include "cloud_json.hpp"
+#include "cloud_portal.hpp"
 #include "settings.hpp"
 #include "shell.hpp"
 #include "storage.hpp"
@@ -17,6 +18,7 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
+#include "mdns.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
@@ -93,6 +95,14 @@ constexpr EventBits_t kBitGotIp     = 1u << 0;
 constexpr EventBits_t kBitNewRecord = 1u << 1;
 constexpr EventBits_t kBitReconnect = 1u << 2;  // the backoff timer came due
 
+// --- mDNS -------------------------------------------------------------------
+// What makes a fleet usable: a laptop walks every post by name instead of
+// hunting addresses in a DHCP lease table. The service record is what a browser
+// finds; the hostname is what someone types.
+constexpr const char* kMdnsService = "_http";
+constexpr const char* kMdnsProto   = "_tcp";
+constexpr uint16_t    kMdnsPort    = 80;
+
 // --- Time -------------------------------------------------------------------
 // The public pool rather than a vendor's: this device has no relationship with
 // anyone whose NTP server it should prefer, and the pool is what espressopost
@@ -152,10 +162,16 @@ esp_err_t s_last_error = ESP_OK;
 // is what identifies a row's origin.
 char s_device_id[13] = {};
 
+// The post's name slugified for mDNS. Kept alongside the address because the
+// Network screen shows both — mDNS is unreliable on some networks, and a
+// device that can only say its .local name has no fallback to offer.
+char s_host[kHostMax] = {};
+
 uint32_t s_retry_delay_ms = kRetryMinMs;
 int      s_retry_count    = 0;
 bool     s_started        = false;  // esp_wifi_start() has been called
 bool     s_sntp_inited    = false;  // esp_netif_sntp_init() has run (once)
+bool     s_mdns_up        = false;  // mdns_init() has run (once)
 
 struct Lock {
   bool ok;
@@ -225,6 +241,62 @@ void compute_device_id() {
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
   std::snprintf(s_device_id, sizeof(s_device_id), "%02x%02x%02x%02x%02x%02x",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+// --- Identity on the network ------------------------------------------------
+
+// Lowercase the name, keep [a-z0-9], turn every run of anything else into a
+// single dash, and trim the ends: "North Fermenter #3" becomes
+// "north-fermenter-3". A hostname carries neither spaces nor punctuation, which
+// is the third reason the name is ASCII-only (settings.hpp has the other two).
+void slugify(const char* in, char* out, size_t cap) {
+  size_t o = 0;
+  bool prev_dash = true;  // starts true so a leading run produces no dash
+  for (const char* p = in; *p != '\0' && o + 1 < cap; ++p) {
+    char c = *p;
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+      out[o++] = c;
+      prev_dash = false;
+    } else if (!prev_dash) {
+      out[o++] = '-';
+      prev_dash = true;
+    }
+  }
+  while (o > 0 && out[o - 1] == '-') --o;
+  out[o] = '\0';
+  // A name of nothing but punctuation is legal (set_name only strips non-ASCII)
+  // and slugifies to nothing. The device id always yields a usable label.
+  if (o == 0) std::snprintf(out, cap, "post-%s", s_device_id);
+}
+
+// Recompute the hostname from the current name and push it to mDNS if it is up.
+// Called at every point the name can change, which is exactly the config form.
+void apply_identity() {
+  const settings::Settings cfg = settings::get();
+  char slug[kHostMax] = {};
+  slugify(cfg.name, slug, sizeof(slug));
+  { Lock l; std::snprintf(s_host, sizeof(s_host), "%s", slug); }
+  if (!s_mdns_up) return;
+  mdns_hostname_set(slug);
+  mdns_instance_name_set(cfg.name);
+}
+
+// Brought up on the first GOT_IP and left up: the responder needs an interface
+// with an address, and re-registering on every reconnect would only churn the
+// same records.
+void start_mdns() {
+  if (s_mdns_up) return;
+  const esp_err_t e = mdns_init();
+  if (e != ESP_OK) {
+    ESP_LOGW(kTag, "mDNS init failed: %s; the post is reachable by IP only",
+             esp_err_to_name(e));
+    return;
+  }
+  s_mdns_up = true;
+  apply_identity();
+  mdns_service_add(nullptr, kMdnsService, kMdnsProto, kMdnsPort, nullptr, 0);
+  ESP_LOGI(kTag, "config form reachable at http://%s.local/", s_host);
 }
 
 // --- Reconnect --------------------------------------------------------------
@@ -569,6 +641,15 @@ void on_event(void* /*arg*/, esp_event_base_t base, int32_t id, void* data) {
     }
     if (s_retry_timer != nullptr) esp_timer_stop(s_retry_timer);
     ESP_LOGI(kTag, "connected to '%s' as %s, rssi %d", ssid, ip, rssi);
+
+    // Provisioning is over the moment the post has an address of its own. The
+    // setup AP and the DNS hijack exist only to get it here; the config form
+    // they were serving carries on over the LAN.
+    if (portal::ap_active()) {
+      portal::stop_ap();
+      esp_wifi_set_mode(WIFI_MODE_STA);
+    }
+    start_mdns();
     start_sntp();  // correct the clock now that we are online (idempotent)
     xEventGroupSetBits(s_events, kBitGotIp);
     return;
@@ -602,6 +683,8 @@ void print_status() {
   if (st.wifi == WifiState::Connected) {
     std::printf("ssid:   %s\nip:     %s\nrssi:   %d dBm\n", st.ssid, st.ip, st.rssi_dbm);
   }
+  if (st.provisioning) std::printf("setup:  AP up, form at http://192.168.4.1/\n");
+  std::printf("host:   %s.local\n", st.host);
   std::printf("clock:  %s\n", st.time_synced ? "synced" : "not set");
   { Lock l; std::printf("device: %s\n", s_device_id); }
   std::printf("name:   %s\n", settings::get().name);
@@ -615,7 +698,7 @@ void print_status() {
 
 int cmd_cloud(int argc, char** argv) {
   if (argc < 2) {
-    std::printf("usage: cloud <status | wifi SSID [PASSWORD] | forget\n"
+    std::printf("usage: cloud <status | wifi SSID [PASSWORD] | portal | forget\n"
                 "             | url URL | token TOKEN | sync | resync>\n");
     return 0;
   }
@@ -631,6 +714,12 @@ int cmd_cloud(int argc, char** argv) {
     const esp_err_t e = set_credentials(argv[2], pass);
     std::printf("wifi '%s' (%s): %s\n", argv[2],
                 pass[0] != '\0' ? "with password" : "open", esp_err_to_name(e));
+    return e == ESP_OK ? 0 : 1;
+  }
+
+  if (std::strcmp(sub, "portal") == 0) {
+    const esp_err_t e = start_provisioning();
+    std::printf("setup AP '%s': %s\n", settings::get().name, esp_err_to_name(e));
     return e == ESP_OK ? 0 : 1;
   }
 
@@ -674,11 +763,42 @@ void register_commands() {
   // use is how a header bump turns into a build break.
   const esp_console_cmd_t cmd = {
       .command = "cloud",
-      .help = "network + sheet sync: status | wifi | forget | url | token | sync | resync",
+      .help = "network + sheet sync: status | wifi | portal | forget | url | token | sync | resync",
       .hint = nullptr,
       .func = &cmd_cloud,
   };
   esp_console_cmd_register(&cmd);
+}
+
+// --- The config form --------------------------------------------------------
+
+// Runs on the httpd task. The portal applies everything `settings` owns itself;
+// what arrives here is the half this component owns — the endpoint, the radio's
+// credentials, and the name, which has to reach mDNS as well as NVS.
+void on_portal_submit(const portal::Submission& sub) {
+  // A blank name is not "unchanged": set_name reads it as "restore the
+  // MAC-derived default", which is the useful meaning of clearing the field.
+  settings::set_name(sub.name);
+  apply_identity();
+
+  if (sub.url[0] != '\0') set_endpoint(sub.url);
+  if (sub.token[0] != '\0') set_token(sub.token);
+
+  if (sub.ssid[0] != '\0') {
+    wifi_config_t cur = {};
+    const bool same_ssid =
+        esp_wifi_get_config(WIFI_IF_STA, &cur) == ESP_OK &&
+        std::strncmp(reinterpret_cast<const char*>(cur.sta.ssid), sub.ssid,
+                     sizeof(cur.sta.ssid)) == 0;
+    // Re-applying credentials drops the link and reconnects. Over the LAN the
+    // network field comes back prefilled with the network the page was served
+    // on, so doing that unconditionally would cost a reconnect every time
+    // someone nudged a threshold. Only a different network, or a password
+    // deliberately typed in, is a real change.
+    if (!same_ssid || sub.password[0] != '\0') {
+      set_credentials(sub.ssid, sub.password);
+    }
+  }
 }
 
 }  // namespace
@@ -722,6 +842,8 @@ esp_err_t init() {
   };
   ESP_RETURN_ON_ERROR(esp_timer_create(&targs, &s_retry_timer), kTag, "retry_timer");
 
+  apply_identity();
+
   const bool provisioned = has_stored_creds();
   if (provisioned) {
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), kTag, "wifi_mode");
@@ -729,11 +851,30 @@ esp_err_t init() {
     s_started = true;
     set_wifi_state(WifiState::Connecting);
   } else {
-    // No credentials: leave the radio down entirely rather than started and idle.
-    // Nothing can connect it until someone supplies a network, and an unstarted
-    // radio is the one that costs nothing.
+    // No credentials: come up as an open access point serving the setup form, so
+    // a phone is the whole client. APSTA rather than AP, because the form's
+    // network picker needs a station to scan with.
+    //
+    // The SSID is the post's name, which on an unprovisioned device is still the
+    // MAC-derived Post-XXXX — so a rack of identical boxes is already told apart
+    // in the phone's Wi-Fi list, before the portal has even opened.
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), kTag, "wifi_mode");
+    // A named copy, not `settings::get().name`: get() returns by value, so the
+    // array member would decay to a pointer into a temporary that dies at the end
+    // of the statement.
+    const settings::Settings cfg = settings::get();
+    const esp_err_t ap_err = portal::start_ap(cfg.name);
+    if (ap_err != ESP_OK) ESP_LOGE(kTag, "setup AP failed: %s", esp_err_to_name(ap_err));
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), kTag, "wifi_start");
+    s_started = true;
     set_wifi_state(WifiState::Disabled);
   }
+
+  // Started whichever way the radio came up, and never stopped again: the form
+  // is where thresholds and the name are edited, not just where credentials
+  // arrive once. See cloud_portal.hpp for why the two halves are separate.
+  const esp_err_t srv = portal::start_server(&on_portal_submit);
+  if (srv != ESP_OK) ESP_LOGE(kTag, "config form unavailable: %s", esp_err_to_name(srv));
 
   register_commands();
 
@@ -747,7 +888,7 @@ esp_err_t init() {
   xEventGroupSetBits(s_events, kBitNewRecord);
 
   ESP_LOGI(kTag, "init: %s, endpoint %s, device %s, hwm %lu",
-           provisioned ? "credentials stored, connecting" : "no credentials",
+           provisioned ? "credentials stored, connecting" : "no credentials, setup AP up",
            s_url[0] != '\0' ? "set" : "unset", s_device_id,
            static_cast<unsigned long>(s_hwm));
   return ESP_OK;
@@ -767,6 +908,7 @@ Status status() {
     st.rssi_dbm     = s_rssi;
     std::memcpy(st.ssid, s_ssid, sizeof(st.ssid));
     std::memcpy(st.ip, s_ip, sizeof(st.ip));
+    std::memcpy(st.host, s_host, sizeof(st.host));
     st.sync         = s_sync;
     st.endpoint_set = s_url[0] != '\0';
     st.uploaded     = s_hwm;
@@ -778,6 +920,7 @@ Status status() {
   // is how a deadlock gets built by accident.
   const uint32_t total = storage::next_index();
   st.pending = (total > hwm) ? (total - hwm) : 0;
+  st.provisioning = portal::ap_active();
   return st;
 }
 
@@ -818,6 +961,18 @@ esp_err_t set_credentials(const char* ssid, const char* password) {
   // whichever state the radio was in.
   esp_wifi_disconnect();
   schedule_retry(kRetryMinMs);
+  return ESP_OK;
+}
+
+esp_err_t start_provisioning() {
+  if (s_mutex == nullptr) return ESP_ERR_INVALID_STATE;
+  if (portal::ap_active()) return ESP_OK;
+  ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), kTag, "wifi_mode");
+  ESP_RETURN_ON_ERROR(portal::start_ap(settings::get().name), kTag, "start_ap");
+  if (!s_started) {
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), kTag, "wifi_start");
+    s_started = true;
+  }
   return ESP_OK;
 }
 
@@ -862,6 +1017,14 @@ esp_err_t set_token(const char* token) {
   if (!persist_str(kNvsKeyToken, token, s_token, sizeof(s_token))) return ESP_FAIL;
   notify_new_record();
   return ESP_OK;
+}
+
+void endpoint(char* out, size_t cap) {
+  if (out == nullptr || cap == 0) return;
+  out[0] = '\0';
+  if (s_mutex == nullptr) return;
+  Lock l;
+  std::snprintf(out, cap, "%s", s_url);
 }
 
 void resync() {

@@ -6,13 +6,12 @@
 #include "esp_err.h"
 
 // Network side of the post: the Wi-Fi link, the wall clock that rides in on it,
-// and — as M8 lands — the durable upload queue that mirrors every record into a
-// Google Sheet, the always-on config form, and mDNS.
+// the durable upload queue that mirrors every record into a Google Sheet, the
+// always-on config form, and mDNS.
 //
-// **The link, the clock and the uploader exist today.** Still to come in this
-// milestone: the captive portal that replaces the console as the way credentials
-// arrive, the always-on config form, and mDNS. They build on top of this file
-// rather than beside it.
+// The captive portal and the config form itself live in cloud_portal.cpp; this
+// file owns the radio's lifecycle, so it is what decides when the setup AP is up
+// and what the post is called on the network.
 //
 // Why the clock lives here at all: this board has no battery-backed RTC (see
 // storage.hpp), so SNTP over Wi-Fi is the *only* source of wall-clock time.
@@ -30,6 +29,10 @@ namespace thermopost::cloud {
 constexpr size_t kSsidMax     = 33;  // 32 bytes + NUL
 constexpr size_t kPasswordMax = 65;  // 64 bytes + NUL
 constexpr size_t kIpTextMax   = 16;  // "255.255.255.255" + NUL
+
+// The mDNS hostname, slugified from the post's name (24 chars) — dashes never
+// add length, so the name's own limit bounds this one.
+constexpr size_t kHostMax = 32;
 
 // An Apps Script /exec URL runs to about 120 characters; the rest is headroom.
 constexpr size_t kUrlMax   = 160;
@@ -58,6 +61,8 @@ struct Status {
   int8_t    rssi_dbm;            // last AP RSSI; 0 when not associated
   char      ssid[kSsidMax];      // network joined while Connected; "" otherwise
   char      ip[kIpTextMax];      // address held while Connected; "" otherwise
+  char      host[kHostMax];      // mDNS name, without the ".local" suffix
+  bool      provisioning;        // the setup AP is up and serving the form
 
   SyncState sync;
   bool      endpoint_set;        // a /exec URL is stored (the token has a default)
@@ -87,12 +92,18 @@ Status status();
 // from a form or a console line is not to be trusted to have honoured its own
 // limit. `password` may be null or empty for an open network.
 //
-// The captive portal in a later step of this milestone calls exactly this — the
-// console command is not a lesser path, it is the same one.
+// The config form calls exactly this — the console command is not a lesser path,
+// it is the same one.
 esp_err_t set_credentials(const char* ssid, const char* password);
 
+// Bring the setup AP back up on a post that is already provisioned, so its
+// network can be changed from a phone without a serial cable. Backs the
+// Network screen's "Setup Wi-Fi" and the `cloud portal` command. The AP
+// comes down by itself on the next GOT_IP, exactly as it does at first boot.
+esp_err_t start_provisioning();
+
 // Erase the stored credentials and drop the link, settling to Disabled rather
-// than reconnecting. Backs the Connections screen's "Forget Network".
+// than reconnecting. Backs the Network screen's "Forget".
 void forget();
 
 // --- The Sheet endpoint -----------------------------------------------------
@@ -106,6 +117,11 @@ void forget();
 // the Apps Script if the Sheet needs real access control.
 esp_err_t set_endpoint(const char* url);
 esp_err_t set_token(const char* token);
+
+// Copy the stored endpoint URL into `out` (empty when unset). For the config
+// form's prefill: the URL is long, awkward to retype and not a secret. The token
+// has no equivalent and deliberately never will.
+void endpoint(char* out, size_t cap);
 
 // Rewind the high-water mark so every record still on disk is offered again.
 // For a Sheet that was cleared or recreated — the device otherwise only ever

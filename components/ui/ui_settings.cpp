@@ -49,8 +49,6 @@ constexpr int32_t kPillBandDy = (kControlBandH - kPillH) / 2;
 static_assert(kPillH <= kControlBandH,
               "a text pill taller than the band would centre outside its own cell");
 
-constexpr int32_t kFooterY = kScreenH - kEdgePad - kFont14H;
-
 // Checked here rather than discovered on the panel: a stepper that overhangs the
 // screen edge loses the half of its click area that hangs off, which reads as a
 // disc that only works on one side.
@@ -98,34 +96,6 @@ constexpr uint8_t  kVolumeStepPct   = 5;
 
 constexpr uint32_t kSecPerMin  = 60;
 constexpr uint32_t kSecPerHour = 3600;
-
-// --- Shared chrome ----------------------------------------------------------
-struct PageChrome {
-  lv_obj_t* group;
-  NavPill   back;
-  lv_obj_t* heading;
-  lv_obj_t* footer;
-};
-
-void on_back(lv_event_t*) { nav::go(nav::Screen::Menu); }
-
-// Fills the caller's PageChrome in place rather than returning one. It has to: the
-// nav pill's painter keeps a pointer to the NavPill it was built against, so a
-// chrome built into a local and then copied out would leave that painter reading a
-// destroyed stack frame on the first redraw.
-void build_chrome(lv_obj_t* scr, const char* title, PageChrome* c) {
-  c->group = build_group(scr);
-  build_nav_pill(c->group, &c->back, NavGlyph::Chevron, "Back", on_back);
-
-  c->heading = make_boxed_label(c->group, &lv_font_montserrat_24, kColorText, kHeadingW,
-                                LV_TEXT_ALIGN_CENTER);
-  lv_label_set_text(c->heading, title);
-  lv_obj_set_pos(c->heading, kEdgePad + kNavPillW, kHeadingY);
-
-  c->footer = make_boxed_label(c->group, &lv_font_montserrat_14, kColorMuted,
-                               kScreenW - 2 * kEdgePad, LV_TEXT_ALIGN_CENTER);
-  lv_obj_set_pos(c->footer, kEdgePad, kFooterY);
-}
 
 // Centre a widget of known width on `cx`, top edge at `y`. The width is passed in
 // rather than read back with lv_obj_get_width: coords are only reliable after a
@@ -293,7 +263,7 @@ void load() {
 }
 
 void build(lv_obj_t* scr) {
-  build_chrome(scr, "Thresholds", &s_page);
+  build_page_chrome(scr, "Thresholds", &s_page);
 
   s_min.step = 1;
   s_min.on_change = on_min_change;
@@ -385,7 +355,7 @@ void load() {
 }
 
 void build(lv_obj_t* scr) {
-  build_chrome(scr, "Recording", &s_page);
+  build_page_chrome(scr, "Recording", &s_page);
 
   s_interval.min = 0;
   s_interval.max = kIntervalChoiceCount - 1;
@@ -525,7 +495,7 @@ void load() {
 }
 
 void build(lv_obj_t* scr) {
-  build_chrome(scr, "Sound", &s_page);
+  build_page_chrome(scr, "Sound", &s_page);
 
   s_volume.min = 0;
   s_volume.max = static_cast<int16_t>(settings::kVolumeMaxPct);
@@ -588,7 +558,7 @@ void on_toggle(lv_event_t*) {
 void load() { refresh_state(); }
 
 void build(lv_obj_t* scr) {
-  build_chrome(scr, "Display", &s_page);
+  build_page_chrome(scr, "Display", &s_page);
 
   lv_obj_t* fade[nav::kMaxFadeWidgets];
   int n = 0;

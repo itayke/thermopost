@@ -14,8 +14,8 @@ namespace thermopost::ui {
 // timestamp would be worse than either: one is a fact, the other is a bug report.
 //
 // Renders in kPosixTz, which is a compile-time constant for now. It belongs in
-// settings once the config form can carry it (M8); until then a relocation is a
-// one-string change in ui_chrome.cpp.
+// settings once the config form carries a zone field; until then a relocation is
+// a one-string change in ui_chrome.cpp.
 bool format_clock(char* out, size_t n, const char* fmt);
 
 // A plain label with its font and colour set. Returned unpositioned; the caller
@@ -75,5 +75,22 @@ struct NavPill {
 // LV_EVENT_CLICKED.
 void build_nav_pill(lv_obj_t* parent, NavPill* pill, NavGlyph glyph,
                     const char* text, lv_event_cb_t on_tap);
+
+// The frame every page under the menu hub shares: a Back chevron in the shared
+// corner, a heading centred beside it, and one line of footer text. Caller-owned
+// for the same reason NavPill is — and it has to be filled in place rather than
+// returned, because the pill's painter keeps a pointer to the NavPill it was
+// built against, so a chrome built into a local and copied out would leave that
+// painter reading a destroyed stack frame on the first redraw.
+struct PageChrome {
+  lv_obj_t* group;
+  NavPill   back;
+  lv_obj_t* heading;
+  lv_obj_t* footer;
+};
+
+// Build that frame into `scr`. Back always returns to the menu hub — every page
+// that uses this is one the hub opened.
+void build_page_chrome(lv_obj_t* scr, const char* title, PageChrome* c);
 
 }  // namespace thermopost::ui

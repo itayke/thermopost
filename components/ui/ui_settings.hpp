@@ -12,14 +12,14 @@
 // edited in °F does not land on a round number of °C, and a page that hid that
 // would look like it was drifting.
 //
-// Every write goes through the same settings::set_* setters the web form will use in
-// M8, so there is no second source of truth and no merge to get wrong. Each page
+// Every write goes through the same settings::set_* setters the web config form uses,
+// so there is no second source of truth and no merge to get wrong. Each page
 // re-reads on show, which is what keeps a page opened after a form write from
 // showing — and then clobbering — a stale value.
 namespace thermopost::ui::settings_screen {
 
 // Builds all four pages into `scr` and registers them with nav. Call after
-// nav::init().
+// nav::init(). Network is a page of its own — see ui_network.hpp.
 void build_all(lv_obj_t* scr);
 
 }  // namespace thermopost::ui::settings_screen

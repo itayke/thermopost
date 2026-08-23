@@ -6,6 +6,7 @@ idf_component_register(
         "ui_stepper.cpp"
         "ui_menu.cpp"
         "ui_settings.cpp"
+        "ui_network.cpp"
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS
@@ -13,6 +14,7 @@ idf_component_register(
     PRIV_REQUIRES
         alert           # thresholds, for the band lines and the readout tint
         audio           # the Sound page's alarm test
+        cloud           # the Network page: link state, addresses, sync
         cloud           # the status strip's uploaded counter
         display         # the LVGL lock and the display handle
         recorder        # the graph's history ring
