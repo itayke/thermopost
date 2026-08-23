@@ -62,13 +62,13 @@ CONFIG_LV_USE_CUSTOM_MALLOC=y
 # here or the linker can't find it. The UI never names a face directly — these
 # back the three roles in ui_theme.hpp, which is where a swap is made:
 #   14 pt — kFontBody: captions, chips, footers, the status strip
-#   24 pt — kFontTitle: headings and every button label
+#   20 pt — kFontTitle: headings and every button label
 #   42 pt — kFontReadout: the main screen's temperature
-# Each size costs flash for its whole glyph range — about 10 KB at 14 pt and
-# 40 KB at 42 — so enabling a size nothing points at is pure image growth.
+# Each size costs flash for its whole glyph range — about 6 KB at 14 pt, 9 KB at
+# 20 and 39 KB at 42 — so enabling a size nothing points at is pure image growth.
 #
 # A different typeface is not a Kconfig switch: convert the TTF with lv_font_conv
-# (`--font X.ttf --size 24 --bpp 4 --range 0x20-0x7F --format lvgl -o x_24.c`),
+# (`--font X.ttf --size 20 --bpp 4 --range 0x20-0x7F --format lvgl -o x_20.c`),
 # drop the .c under components/ui/, declare it extern, and point the role at it.
 # Two things to get right. Keep --bpp 4: the 1-bit output aliases badly at this
 # size on a 320x240 panel. And merge FontAwesome in the same command — LV_SYMBOL_*
@@ -76,7 +76,7 @@ CONFIG_LV_USE_CUSTOM_MALLOC=y
 # any text TTF has, so a plain conversion drops the stepper's +/- and the threshold
 # arrows to empty boxes. Only those four glyphs are used, so the second --range
 # can be exactly them rather than the whole icon set.
-CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_42=y
 
 # --- LVGL QR code widget ---

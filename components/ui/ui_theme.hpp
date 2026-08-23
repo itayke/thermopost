@@ -65,7 +65,7 @@ constexpr lv_color_t kColorStepper = kColorMenu;
 // array and compiled in — see the note there — but nothing outside this block
 // needs to know that happened.
 constexpr const lv_font_t* kFontBody    = &lv_font_montserrat_14;
-constexpr const lv_font_t* kFontTitle   = &lv_font_montserrat_24;
+constexpr const lv_font_t* kFontTitle   = &lv_font_montserrat_20;
 constexpr const lv_font_t* kFontReadout = &lv_font_montserrat_42;
 
 // --- Layout: 320x240 landscape ---------------------------------------------
@@ -85,7 +85,7 @@ constexpr int32_t kEdgePad = 8;
 // above are restated. ui::init() checks them against the linked faces at boot and
 // warns on a mismatch — which is what a font swap that forgot this looks like.
 constexpr int32_t kFontBodyH    = 16;
-constexpr int32_t kFontTitleH   = 27;
+constexpr int32_t kFontTitleH   = 22;
 constexpr int32_t kFontReadoutH = 46;
 
 // Rows, top to bottom: readout, chart, time captions, status strip. Everything is
@@ -204,6 +204,17 @@ constexpr int32_t kHeadingCx = kEdgePad + kNavPillW + kHeadingW / 2;
 constexpr int32_t kHeadingDx = kHeadingCx - kScreenW / 2;
 static_assert(kHeadingCx - kHeadingW / 2 >= kEdgePad + kNavPillW,
               "a centred heading would overlap the nav pill");
+
+// Where a full-width row under the heading may start. Not the heading's own bottom:
+// the heading only spans the band beside the nav pill, so a row that runs the whole
+// width has to clear the pill as well, and the pill is the taller of the two at any
+// title size below 24 pt. Three pages had each derived their own version of this
+// from the heading alone and only two had checked the pill — which held only because
+// the two edges happened to coincide at 24 pt.
+constexpr int32_t kHeadingBottom = kHeadingY + kFontTitleH;
+constexpr int32_t kNavPillBottom = kNavPillY + kNavPillH;
+constexpr int32_t kBelowHeadingY =
+    kHeadingBottom > kNavPillBottom ? kHeadingBottom : kNavPillBottom;
 
 // One line of small text along the bottom of every screen but the main one. Here
 // rather than in each page's own file because three of them had derived the same

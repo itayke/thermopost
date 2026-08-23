@@ -40,12 +40,10 @@ constexpr size_t kUriMax =
 // it is what the phone's Wi-Fi list will show, so a camera that will not focus
 // still leaves someone able to join by hand.
 constexpr int32_t kQrSize = 140;
-constexpr int32_t kQrY    = kHeadingY + kFontTitleH + 5;
+constexpr int32_t kQrY    = kBelowHeadingY + 5;
 constexpr int32_t kNameGap = 6;
 constexpr int32_t kNameY  = kQrY + kQrSize + kNameGap;
 static_assert(kNameY + kFontBodyH <= kFooterY, "the network name runs into the footer");
-static_assert(kQrY >= kNavPillY + kNavPillH,
-              "a centred code this high would sit beside the nav pill, not under it");
 
 // A QR is only scannable if its light modules are actually light. The panel's own
 // background is near-black, so the code brings its own plate and quiet zone rather

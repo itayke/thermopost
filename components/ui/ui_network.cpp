@@ -22,7 +22,7 @@ constexpr size_t kTextMax = 64;
 constexpr int32_t kLineGap = 4;
 constexpr int32_t kLineH   = kFontBodyH + kLineGap;
 constexpr int     kLines   = 5;
-constexpr int32_t kInfoY   = kHeadingY + kFontTitleH + 8;
+constexpr int32_t kInfoY   = kBelowHeadingY + 8;
 constexpr int32_t kInfoW   = kScreenW - 2 * kEdgePad;
 constexpr int32_t kInfoBottom = kInfoY + kLines * kLineH;
 

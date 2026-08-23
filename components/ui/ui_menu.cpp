@@ -50,11 +50,10 @@ static_assert(4 + kEntryCount <= nav::kMaxFadeWidgets,
 // Heading + hint at the top, a grid of entry pills, one status line along the
 // bottom. Two columns rather than one because four stacked pills tall enough to hit
 // reliably do not fit under a heading on a 240 px panel.
-constexpr int32_t kHintY = kHeadingY + kFontTitleH + 2;
-// The hint spans the full width, so it has to start below the nav pill rather than
-// beside it — a full-width line at the heading's height would run under the pill.
-static_assert(kHintY >= kNavPillY + kNavPillH,
-              "a full-width hint at this height would run under the nav pill");
+// The hint spans the full width, so it starts below the nav pill rather than beside
+// it — kBelowHeadingY is that edge, and it is the theme's job now because this page
+// was not the only one to need it.
+constexpr int32_t kHintY = kBelowHeadingY + 2;
 
 constexpr int32_t kGridCols = 2;
 
@@ -81,6 +80,11 @@ constexpr int32_t kGridSeam   = 2;
 constexpr int32_t kGridColGap = 2 * kEntryExtClick + kGridSeam;
 constexpr int32_t kGridRowGap = kGridColGap;
 
+// 141 px, and the binding constraint is the longest label rather than the grid:
+// "Thresholds" sets at 111 px in Montserrat 20, so there are about 15 px of air each
+// side. It was under 4 px at 24 pt. Worth knowing which way that fails: LVGL centres
+// the label and the capsule clips its children, so an entry too long for the cell
+// loses both of its ends rather than ellipsising one.
 constexpr int32_t kEntryW = (kScreenW - 2 * kEdgePad - kGridColGap) / kGridCols;
 static_assert(kEntryW > kEntryH,
               "a cell taller than it is wide takes its hit margin from the width, "

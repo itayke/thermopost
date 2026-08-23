@@ -51,7 +51,7 @@ constexpr const char* kNoClock = "no clock";
 // clock has to follow the pill when the pill moves, and recomputing the same sum
 // is exactly how the two came apart the first time.
 constexpr int32_t kClockGap = 3;
-constexpr int32_t kClockY = kNavPillY + kNavPillH + kClockGap;
+constexpr int32_t kClockY = kNavPillBottom + kClockGap;
 // Wide enough for kNoClock and no wider, so a long value can never grow into the
 // readout's space.
 constexpr int32_t kClockW = 64;
