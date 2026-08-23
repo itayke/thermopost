@@ -67,6 +67,15 @@ constexpr const char* kNvsKeyPending = "rot_pending";
 
 bool     s_mounted = false;
 uint32_t s_base    = 0;  // mirrors kNvsKeyBase; NVS is the source of truth
+// Records currently in the file. Cached because count() is on the UI's path —
+// the status strip asks for it several times a second — and the only way to get
+// it from littlefs is a stat(), which takes the filesystem's own lock. That put
+// the LVGL task behind whatever else was touching flash: an append, the cloud
+// uploader reading a batch, or worst of all a rotation rewriting ninety thousand
+// records. A frozen screen with dead buttons, for as long as the background work
+// ran. Refreshed from the file at every point that changes it, always under
+// s_lock, so it is re-derived rather than counted up and cannot drift.
+uint32_t s_records = 0;
 
 // append + read + rotate all touch the same file. Today the sample task is the
 // only writer and the LVGL task the only reader, but that is two tasks already.
@@ -203,6 +212,7 @@ esp_err_t rotate_locked(uint32_t drop_count) {
     return ESP_FAIL;
   }
   s_base = pending;
+  s_records = file_count();
 
   ESP_LOGW(kTag, "rotated: dropped %u oldest records, %u kept, base index now %u",
            static_cast<unsigned>(drop_count), static_cast<unsigned>(moved),
@@ -308,6 +318,7 @@ esp_err_t init() {
   recover_rotation();
 
   s_mounted = true;
+  s_records = file_count();
 
   size_t total = 0, used = 0;
   if (esp_littlefs_info(kPartitionLbl, &total, &used) == ESP_OK) {
@@ -352,11 +363,15 @@ esp_err_t append(const TempRecord& record) {
   // deliberately not propagated — the caller's reading is safely on disk, and
   // failing the append to report a housekeeping problem would trade real data
   // for tidiness. The log simply grows past the cap until a later attempt wins.
-  if (file_count() > kMaxRecords) {
+  s_records = file_count();
+  if (s_records > kMaxRecords) {
     const esp_err_t rot_err = rotate_locked(kRotateBlock);
     if (rot_err != ESP_OK) {
+      // rotate_locked only refreshes the cache on the path that succeeds, so do
+      // it here too — the log is over cap and the count still has to be true.
+      s_records = file_count();
       ESP_LOGE(kTag, "rotation failed (%s) — log is over cap at %u records",
-               esp_err_to_name(rot_err), static_cast<unsigned>(file_count()));
+               esp_err_to_name(rot_err), static_cast<unsigned>(s_records));
     }
   }
   return ESP_OK;
@@ -366,7 +381,7 @@ uint32_t first_index() { return s_base; }
 
 uint32_t count() {
   if (!s_mounted) return 0;
-  return file_count();
+  return s_records;  // cached; see the declaration for why it is not a stat()
 }
 
 uint32_t next_index() { return s_base + count(); }
@@ -443,6 +458,7 @@ esp_err_t erase_all() {
     return ESP_FAIL;
   }
   s_base = 0;
+  s_records = 0;
   ESP_LOGW(kTag, "log erased; absolute numbering restarts at 0 — reset the cloud "
                  "high-water mark too or the new records look already-uploaded");
   return ESP_OK;

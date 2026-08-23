@@ -60,6 +60,21 @@ static_assert(kColRightCx + kCellW / 2 <= kScreenW, "the right column overhangs 
 static_assert(kRow2Y + kFont14H + kCaptionGap + stepper_height(kStepperCfg) <= kFooterY,
               "the second control row runs into the footer");
 
+// Three pages put a control in each column of row 1, so the two must not meet.
+// stepper_width already includes the discs' click margin, which makes this the hit
+// test and not just the visual one: at kExtClickPad = 10 the clearance between the
+// left cell's (+) and the right cell's (-) is six pixels, and raising the pad by four
+// is what turns a tap between them into a value changing on the wrong stepper.
+static_assert(kColRightCx - kColLeftCx >= kCellW,
+              "the two column cells' hit areas overlap between them");
+
+// A toggle is the other thing a column holds, and it is sized independently — so the
+// column check above only covers it while it stays the narrower of the two.
+constexpr int32_t kToggleExtClick = ext_click_for(kToggleW, kToggleH);
+static_assert(kToggleW + 2 * kToggleExtClick <= kCellW,
+              "a toggle now reaches wider than a stepper cell, so the column assert "
+              "above no longer speaks for it");
+
 // --- Threshold coupling -----------------------------------------------------
 // Minimum gap between the two thresholds, in whole display degrees. One is enough:
 // the point is only that the pair cannot cross or collapse to a zero-width band,

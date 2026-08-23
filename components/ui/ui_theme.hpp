@@ -138,18 +138,29 @@ constexpr int32_t kPillH = 35;
 // pointing (see the offset in touch.cpp).
 constexpr int32_t kMinTouchPx = 48;
 
-// How far a control's hit area must reach past its capsule to meet kMinTouchPx.
-// Driven by the smaller dimension, because ext_click_area is a single value applied
-// to all four sides.
+// Slop every control gets past its drawn edge, whatever its size. A capsule that
+// already clears kMinTouchPx does not *need* one, but a tap that lands two pixels
+// outside a button still meant that button — the drawn shape is where the control
+// looks like it is, not where the finger has to be. This is the number to raise if
+// the panel feels fussy.
 //
-// Zero for anything already large enough, and that matters more than it looks: a
-// blanket margin makes adjacent cells in a grid overlap, and the gutter between them
-// then belongs to whichever was built last rather than to neither. The menu's entry
-// pills sit 12 px apart, so any margin at all put their hit areas on top of each
-// other — at 146x52 they are well past the minimum and need none.
+// It is not free, and the cost is a layout constraint rather than a visual one:
+// adjacent controls must sit more than twice this apart or their hit areas meet in
+// the gap between them, which then belongs to whichever was built last. Every place
+// that puts two controls side by side asserts it — see ui_menu's gutters and
+// ui_settings' columns. Raising this without raising those is a compile error, by
+// design: the symptom otherwise is a tap near a seam opening the wrong page, which
+// reads as a flaky touch panel rather than as arithmetic.
+constexpr int32_t kExtClickPad = 10;
+
+// How far a control's hit area reaches past its capsule: the pad above, or further
+// if the control is small enough to still be under kMinTouchPx at that pad. Driven
+// by the smaller dimension, because ext_click_area is a single value applied to all
+// four sides — so a wide, short pill is grown by its height.
 constexpr int32_t ext_click_for(int32_t w, int32_t h) {
   const int32_t smaller = w < h ? w : h;
-  return smaller >= kMinTouchPx ? 0 : (kMinTouchPx - smaller + 1) / 2;
+  const int32_t to_min = smaller >= kMinTouchPx ? 0 : (kMinTouchPx - smaller + 1) / 2;
+  return to_min > kExtClickPad ? to_min : kExtClickPad;
 }
 
 // The navigation pill lives in the top-left corner of *every* screen: a burger and

@@ -53,23 +53,34 @@ constexpr int32_t kHintY = kHeadingY + kFont24H + 2;
 constexpr int32_t kFooterY = kScreenH - kEdgePad - kFont14H;
 
 constexpr int32_t kGridCols = 2;
-// Gutters, not padding. Each has to clear twice a cell's extended click area, or the
-// two hit areas meet inside the gap and it belongs to whichever cell was built last —
-// asserted below rather than left to the arithmetic, because the symptom is a tap
-// near a seam going to the wrong page, which reads as a flaky touch panel.
-constexpr int32_t kGridColGap = 16;
-constexpr int32_t kGridRowGap = 16;
-constexpr int32_t kEntryW = (kScreenW - 2 * kEdgePad - kGridColGap) / kGridCols;
+
 // The shared text-button height. A fifth shorter than the grid launched with: the
 // capsule is a fill now, so it reads as a target from its colour rather than from its
 // bulk, and the height it gives up is what lets a third row sit under the hint
 // without crowding it.
 constexpr int32_t kEntryH = kPillH;
-constexpr int32_t kEntryExtClick = ext_click_for(kEntryW, kEntryH);
-static_assert(kGridColGap > 2 * kEntryExtClick,
-              "adjacent columns' hit areas overlap in the gutter");
-static_assert(kGridRowGap > 2 * kEntryExtClick,
-              "adjacent rows' hit areas overlap in the gutter");
+
+// A cell's hit margin is set by its height, because a cell is always wider than it is
+// tall and ext_click_area keys off the smaller side. Taking it from the height alone
+// breaks what would otherwise be a circle — the gutters below are derived from this,
+// and the width is derived from the gutters. The assert under kEntryW is what keeps
+// that shortcut honest.
+constexpr int32_t kEntryExtClick = ext_click_for(kEntryH, kEntryH);
+
+// Gutters, not padding. Each has to clear twice a cell's extended click area, or the
+// two hit areas meet inside the gap and it belongs to whichever cell was built last —
+// a tap near a seam opening the wrong page, which reads as a flaky touch panel rather
+// than as arithmetic. Derived rather than typed, so raising kExtClickPad widens these
+// instead of breaking them; kGridSeam is the dead strip deliberately left between the
+// two hit areas, and one pixel would do — two is legible in a screenshot.
+constexpr int32_t kGridSeam   = 2;
+constexpr int32_t kGridColGap = 2 * kEntryExtClick + kGridSeam;
+constexpr int32_t kGridRowGap = kGridColGap;
+
+constexpr int32_t kEntryW = (kScreenW - 2 * kEdgePad - kGridColGap) / kGridCols;
+static_assert(kEntryW > kEntryH,
+              "a cell taller than it is wide takes its hit margin from the width, "
+              "which kEntryExtClick above assumes it never does");
 static_assert(kEntryCount % kGridCols == 0,
               "an odd entry leaves a hole in the grid; give it a full row or add one");
 

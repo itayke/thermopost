@@ -91,6 +91,7 @@ constexpr size_t kRespCapBytes = 256;
 // Event bits driving the sync task.
 constexpr EventBits_t kBitGotIp     = 1u << 0;
 constexpr EventBits_t kBitNewRecord = 1u << 1;
+constexpr EventBits_t kBitReconnect = 1u << 2;  // the backoff timer came due
 
 // --- Time -------------------------------------------------------------------
 // The public pool rather than a vendor's: this device has no relationship with
@@ -234,12 +235,21 @@ void schedule_retry(uint32_t delay_ms) {
   esp_timer_start_once(s_retry_timer, static_cast<uint64_t>(delay_ms) * 1000);
 }
 
-// One-shot timer rather than a task: the only thing a retry loop does is sleep,
-// and a task to hold a sleeping stack is 4 KB spent on nothing. The uploader in
-// the next step needs a real task; this does not.
+// A one-shot timer rather than a task, because the only thing a retry loop does
+// is sleep and a task to hold a sleeping stack is 4 KB spent on nothing.
+//
+// **This callback sets a bit and returns, and that is not a style choice.**
+// esp_timer dispatches every callback from one shared task, and on this device
+// the other timer on it is the LVGL tick (display.cpp). Calling esp_wifi_connect()
+// here — which blocks until the Wi-Fi task takes the request, and can sit there
+// for seconds while the radio scans — stops lv_tick_inc() for exactly that long.
+// LVGL then has no clock: the screen stops repainting and, because the input
+// device is polled by an LVGL timer, touch stops being read at all. The symptom
+// is a frozen screen with dead buttons for the whole duration of a connection
+// attempt, which is a UI bug caused entirely by where the network call was made.
+// Nothing that can block belongs in an esp_timer callback.
 void on_retry_timer(void* /*arg*/) {
-  if (!has_stored_creds()) { set_wifi_state(WifiState::Disabled); return; }
-  esp_wifi_connect();  // errors here surface as the next DISCONNECTED event
+  if (s_events != nullptr) xEventGroupSetBits(s_events, kBitReconnect);
 }
 
 // --- Time sync (SNTP) -------------------------------------------------------
@@ -458,8 +468,21 @@ void sync_task(void* /*arg*/) {
            static_cast<unsigned>(kSyncTaskStack), static_cast<int>(kSyncTaskCore));
   uint32_t backoff = kBackoffMinMs;
   for (;;) {
-    xEventGroupWaitBits(s_events, kBitGotIp | kBitNewRecord,
-                        /*clear=*/pdTRUE, /*waitAll=*/pdFALSE, portMAX_DELAY);
+    const EventBits_t bits =
+        xEventGroupWaitBits(s_events, kBitGotIp | kBitNewRecord | kBitReconnect,
+                            /*clear=*/pdTRUE, /*waitAll=*/pdFALSE, portMAX_DELAY);
+
+    // The backoff timer came due. Done here rather than in the timer callback
+    // because esp_wifi_connect() blocks — see on_retry_timer() for what that
+    // costs when it runs on the task that also drives the LVGL tick.
+    if (bits & kBitReconnect) {
+      if (has_stored_creds()) {
+        esp_wifi_connect();  // errors surface as the next DISCONNECTED event
+      } else {
+        set_wifi_state(WifiState::Disabled);
+      }
+    }
+
     // Drain everything above the mark, then go back to waiting. Both exits are
     // deliberate: up-to-date means there is nothing to do until something
     // happens, and a lost link or a cleared endpoint means there is nowhere to

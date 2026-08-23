@@ -77,6 +77,14 @@ constexpr uint8_t           kBrightnessDefaultPct = 100;
 
 // LVGL tick period. Fed from esp_timer rather than the FreeRTOS tick so
 // animations stay smooth even when the LVGL task is briefly preempted.
+//
+// **esp_timer dispatches every callback from one shared task, so any other timer
+// in this firmware that blocks stops this clock too.** With no tick LVGL has no
+// time: the screen stops repainting and the input device — polled by an LVGL
+// timer, not by the driver — stops being read, so touch dies as well. It looks
+// like a hung UI and is in fact a slow callback somewhere else entirely (the
+// Wi-Fi reconnect timer in cloud.cpp was exactly this). Anything that can block
+// belongs in a task, not in an esp_timer callback.
 constexpr int64_t kLvglTickPeriodUs = 2'000;
 constexpr uint32_t kLvglTickMs = kLvglTickPeriodUs / 1000;
 
