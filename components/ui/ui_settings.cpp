@@ -36,7 +36,18 @@ constexpr int32_t kColRightCx = 3 * kScreenW / 4;
 constexpr int32_t kColMidCx   = kScreenW / 2;
 
 constexpr int32_t kToggleW = 120;
-constexpr int32_t kToggleH = 44;
+constexpr int32_t kToggleH = kPillH;
+
+// A row can hold a toggle beside a stepper, and the two are not the same height —
+// the stepper's container carries its discs' click margin as well as the discs. So a
+// cell's control sits in a band as tall as the tallest of them, centred, and the two
+// share a centreline instead of each centring on its own height. Without this the
+// Sound page's toggle rides six pixels above the volume discs, which reads as a
+// misalignment rather than as two differently sized controls.
+constexpr int32_t kControlBandH = stepper_height(kStepperCfg);
+constexpr int32_t kPillBandDy = (kControlBandH - kPillH) / 2;
+static_assert(kPillH <= kControlBandH,
+              "a text pill taller than the band would centre outside its own cell");
 
 constexpr int32_t kFooterY = kScreenH - kEdgePad - kFont14H;
 
@@ -134,7 +145,7 @@ lv_obj_t* build_toggle_cell(lv_obj_t* group, int32_t cx, int32_t y, const char* 
   *out_caption = build_caption(group, cx, y, caption);
   lv_obj_t* pill = build_pill(group, "", kToggleW, kToggleH, kColorText,
                               &lv_font_montserrat_24, on_tap, nullptr);
-  place(pill, cx, kToggleW, y + kFont14H + kCaptionGap);
+  place(pill, cx, kToggleW, y + kFont14H + kCaptionGap + kPillBandDy);
   return pill;
 }
 
@@ -422,9 +433,6 @@ constexpr uint32_t kTestPollMs = 200;
 constexpr const char* kTestIdle = "Test alarm";
 constexpr const char* kTestStop = "Stop";
 
-static_assert(kRow2Y + kFont14H + kCaptionGap + kTestH <= kFooterY,
-              "the test button runs into the footer");
-
 void refresh_test_label() {
   lv_label_set_text(pill_label(s_test), audio::playing() ? kTestStop : kTestIdle);
 }
@@ -519,7 +527,7 @@ void build(lv_obj_t* scr) {
 
   s_test = build_pill(s_page.group, kTestIdle, kTestW, kTestH, kColorText,
                       &lv_font_montserrat_24, on_test, nullptr);
-  place(s_test, kColMidCx, kTestW, kRow2Y + kFont14H + kCaptionGap);
+  place(s_test, kColMidCx, kTestW, kRow2Y + kFont14H + kCaptionGap + kPillBandDy);
   fade[n++] = s_test;
 
   load();

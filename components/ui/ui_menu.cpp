@@ -53,21 +53,45 @@ constexpr int32_t kHintY = kHeadingY + kFont24H + 2;
 constexpr int32_t kFooterY = kScreenH - kEdgePad - kFont14H;
 
 constexpr int32_t kGridCols = 2;
-constexpr int32_t kGridColGap = 12;
-constexpr int32_t kGridRowGap = 14;
+// Gutters, not padding. Each has to clear twice a cell's extended click area, or the
+// two hit areas meet inside the gap and it belongs to whichever cell was built last —
+// asserted below rather than left to the arithmetic, because the symptom is a tap
+// near a seam going to the wrong page, which reads as a flaky touch panel.
+constexpr int32_t kGridColGap = 16;
+constexpr int32_t kGridRowGap = 16;
 constexpr int32_t kEntryW = (kScreenW - 2 * kEdgePad - kGridColGap) / kGridCols;
-constexpr int32_t kEntryH = 44;
+// The shared text-button height. A fifth shorter than the grid launched with: the
+// capsule is a fill now, so it reads as a target from its colour rather than from its
+// bulk, and the height it gives up is what lets a third row sit under the hint
+// without crowding it.
+constexpr int32_t kEntryH = kPillH;
+constexpr int32_t kEntryExtClick = ext_click_for(kEntryW, kEntryH);
+static_assert(kGridColGap > 2 * kEntryExtClick,
+              "adjacent columns' hit areas overlap in the gutter");
+static_assert(kGridRowGap > 2 * kEntryExtClick,
+              "adjacent rows' hit areas overlap in the gutter");
 static_assert(kEntryCount % kGridCols == 0,
               "an odd entry leaves a hole in the grid; give it a full row or add one");
 
 // The grid is centred in whatever is left between the hint and the footer rather than
 // pinned below the hint, so changing kEntryH or adding a row rebalances the screen
 // instead of piling the slack at the bottom.
-constexpr int32_t kGridRows = kEntryCount / kGridCols;
-constexpr int32_t kGridH = kGridRows * kEntryH + (kGridRows - 1) * kGridRowGap;
 constexpr int32_t kGridTop = kHintY + kFont14H;
+constexpr int32_t kGridRows = kEntryCount / kGridCols;
+constexpr int32_t grid_height(int32_t rows) {
+  return rows * kEntryH + (rows - 1) * kGridRowGap;
+}
+constexpr int32_t kGridH = grid_height(kGridRows);
 constexpr int32_t kGridY = kGridTop + (kFooterY - kGridTop - kGridH) / 2;
 static_assert(kGridY >= kGridTop, "the entry grid does not fit between the hint and the footer");
+
+// M8's Connections and About pages take this to three rows. Checking the taller grid
+// against the same band now means those pages cost a row in kEntries[] and nothing
+// else — the alternative is discovering the squeeze while writing a screen, which is
+// where a hint line quietly gets deleted to make room.
+constexpr int32_t kGridRowsPlanned = 3;
+static_assert(kGridTop + grid_height(kGridRowsPlanned) <= kFooterY,
+              "a third row of entries would not fit under the hint");
 
 // Refreshed once a second while the screen is up.
 constexpr uint32_t kInfoRefreshMs = 1000;

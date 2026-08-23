@@ -117,6 +117,20 @@ static_assert(kStatusY + kStatusH + kEdgePad <= kScreenH, "status strip overflow
 // not sitting on the background anyway.
 constexpr lv_color_t kColorPillText = color(0x000000);
 
+// One height for every text button — the menu's entries, the settings toggles, the
+// test pill — so a screen of controls reads as one system instead of several sizes
+// that happen to coexist. Width stays the caller's: a label decides how wide a
+// capsule has to be, and nothing decides how tall.
+//
+// Two deliberate exceptions, both because their size is not a button-system
+// decision:
+//   * the stepper's discs, whose size is a diameter set by the glyph they hold —
+//     tying it to this would make a font change move the discs;
+//   * the nav pill, at kNavPillH below. At this height the clock beneath it
+//     overflows the top band, which ui_main.cpp asserts; its 25 px belongs to the
+//     main screen's layout, not to this.
+constexpr int32_t kPillH = 35;
+
 // The smallest a control may be to a finger. The drawn capsule is allowed to be
 // smaller — lv_obj_set_ext_click_area grows the hit area without touching the
 // chrome — but nothing should ask for more precision than this. A fingertip covers
