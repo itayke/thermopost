@@ -55,7 +55,10 @@ constexpr const char* kNoEndpoint     = "no Sheet endpoint set";
 constexpr const char* kUploading      = "uploading...";
 constexpr const char* kRetryPending   = "upload retry pending";
 
-constexpr const char* kSetupText   = "Setup Wi-Fi";
+// "Configure", not "Setup Wi-Fi": the form behind it carries the thresholds, the
+// interval and the post's name as well as the credentials, and the AP is only the
+// way to reach it on a post that has no network yet.
+constexpr const char* kConfigureText = "Configure";
 constexpr const char* kForgetText  = "Forget";
 constexpr const char* kConfirmText = "Sure?";
 
@@ -63,6 +66,7 @@ constexpr const char* kConfirmText = "Sure?";
 // a page with no text entry on it invites.
 constexpr const char* kHintProvisioning = "join the post's Wi-Fi and open any page";
 constexpr const char* kHintForm         = "thresholds and the name are editable there too";
+constexpr const char* kSetupFailed      = "could not open the setup network";
 
 // Forget drops a credential that has to be retyped from a phone, and the button
 // sits a finger's width from Setup. So it asks once, and un-asks itself rather
@@ -154,9 +158,6 @@ void refresh() {
   }
 
   lv_label_set_text(s_page.footer, net.provisioning ? kHintProvisioning : kHintForm);
-  // The AP is already up; offering to bring it up again would be a button that
-  // does nothing to a user who cannot see that it already happened.
-  pill_set_color(s_setup, net.provisioning ? kColorMuted : kColorText);
 }
 
 void tick(lv_timer_t*) {
@@ -164,11 +165,18 @@ void tick(lv_timer_t*) {
   refresh();
 }
 
-void on_setup(lv_event_t*) {
-  if (cloud::status().provisioning) return;
+void on_configure(lv_event_t*) {
   disarm_confirm();
-  cloud::start_provisioning();
-  refresh();
+  // Already up on an unprovisioned post, where the AP came on at boot — then this
+  // button is only the way to the code that joins it.
+  if (!cloud::status().provisioning) {
+    const esp_err_t e = cloud::start_provisioning();
+    if (e != ESP_OK) {
+      lv_label_set_text(s_page.footer, kSetupFailed);
+      return;
+    }
+  }
+  nav::go(nav::Screen::Configure);
 }
 
 void on_forget(lv_event_t*) {
@@ -212,8 +220,8 @@ void build(lv_obj_t* scr) {
   }
 
   const int32_t row_x = (kScreenW - kBtnRowW) / 2;
-  s_setup = build_pill(s_page.group, kSetupText, kBtnW, kBtnH, kColorText,
-                       &lv_font_montserrat_14, on_setup, nullptr);
+  s_setup = build_pill(s_page.group, kConfigureText, kBtnW, kBtnH, kColorText,
+                       &lv_font_montserrat_14, on_configure, nullptr);
   lv_obj_set_pos(s_setup, row_x, kBtnY);
   fade[n++] = s_setup;
 

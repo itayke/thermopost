@@ -32,6 +32,7 @@ enum class Screen : uint8_t {
   Sound,
   Display,
   Network,
+  Configure,
   kCount,
 };
 

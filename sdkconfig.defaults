@@ -64,3 +64,9 @@ CONFIG_LV_USE_CUSTOM_MALLOC=y
 #   48 pt — the main screen's big temperature readout
 CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
+
+# --- LVGL QR code widget ---
+# The Configure page draws a WIFI: QR that joins the post's setup AP, so a phone
+# provisions it without anyone typing a network name. The encoder is vendored with
+# LVGL and costs nothing until this is on.
+CONFIG_LV_USE_QRCODE=y

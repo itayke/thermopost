@@ -405,6 +405,19 @@ lookup with its own address. A phone joins it, the OS captive check fails agains
 the wildcard handler, and the setup form pops without anyone typing an address.
 That much is espressopost's portal, ported.
 
+**Joining that AP is a scan, not a spelling exercise.** Network → Configure opens
+the setup network and shows a `WIFI:T:nopass;S:<name>;;` QR code, which both iOS
+and Android cameras read as "join this network" — and since the AP is open there is
+no password to convey, so nothing on screen is worth photographing. The network's
+name is printed under the code as well, so a camera that will not focus still
+leaves someone able to pick it out of a Wi-Fi list by hand.
+
+That page owns the AP's lifetime from the user's side. Back closes the setup
+network instead of leaving an open AP up behind the page that opened it, and the
+page leaves by itself the moment the post has a link — the `GOT_IP` handler tears
+the AP down, so **the AP disappearing *is* the signal that provisioning worked**,
+and nothing else has to be watched for.
+
 **What is different here is the lifetime.** espressopost's HTTP server existed only
 while the setup AP was up: the first `GOT_IP` tore down the AP, the DNS responder
 and the server together, because provisioning was all the form ever did. Here the
@@ -612,6 +625,7 @@ returns.
 | ✅ Built | `cloud` + `shell` — Wi-Fi with unbounded backoff, SNTP clock, `cloud` serial command |
 | ✅ Built | the upload queue — batched POSTs to Apps Script, NVS high-water mark, host-tested JSON |
 | ✅ Built | the captive portal, the always-on config form, mDNS, and the Network screen |
+| ✅ Built | the Configure page — a QR that joins the setup AP, closing it on the way out |
 | ⬜️ Not started | alerts (the state machine's wiring and visuals), power |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →

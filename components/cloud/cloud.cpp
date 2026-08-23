@@ -976,6 +976,16 @@ esp_err_t start_provisioning() {
   return ESP_OK;
 }
 
+void stop_provisioning() {
+  if (s_mutex == nullptr) return;
+  if (!portal::ap_active()) return;
+  portal::stop_ap();
+  // Same teardown the GOT_IP path does: the portal drops the DNS responder, the
+  // mode change is what actually takes the AP off the air.
+  esp_wifi_set_mode(WIFI_MODE_STA);
+  ESP_LOGI(kTag, "setup AP closed");
+}
+
 void forget() {
   if (s_mutex == nullptr) return;
   // Erase first, so the disconnect below settles to Disabled — the DISCONNECTED

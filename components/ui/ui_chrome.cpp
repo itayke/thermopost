@@ -277,9 +277,11 @@ void build_nav_pill(lv_obj_t* parent, NavPill* pill, NavGlyph glyph, const char*
   lv_label_set_text(lbl, text);
 }
 
-void build_page_chrome(lv_obj_t* scr, const char* title, PageChrome* c) {
+void build_page_chrome(lv_obj_t* scr, const char* title, PageChrome* c,
+                       lv_event_cb_t on_back) {
   c->group = build_group(scr);
-  build_nav_pill(c->group, &c->back, NavGlyph::Chevron, "Back", on_page_back);
+  build_nav_pill(c->group, &c->back, NavGlyph::Chevron, "Back",
+                 on_back != nullptr ? on_back : on_page_back);
 
   c->heading = make_boxed_label(c->group, &lv_font_montserrat_24, kColorText, kHeadingW,
                                 LV_TEXT_ALIGN_CENTER);

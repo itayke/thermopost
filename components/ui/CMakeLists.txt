@@ -7,6 +7,7 @@ idf_component_register(
         "ui_menu.cpp"
         "ui_settings.cpp"
         "ui_network.cpp"
+        "ui_configure.cpp"
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS

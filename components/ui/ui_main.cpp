@@ -12,6 +12,7 @@
 #include "sensor.hpp"
 #include "settings.hpp"
 #include "ui_chrome.hpp"
+#include "ui_configure.hpp"
 #include "ui_network.hpp"
 #include "ui_menu.hpp"
 #include "ui_nav.hpp"
@@ -583,6 +584,7 @@ esp_err_t init() {
   menu_screen::build(scr);
   settings_screen::build_all(scr);
   network_screen::build(scr);
+  configure_screen::build(scr);
   nav::start();
 
   refresh(nullptr);  // paint real values before the first frame, not placeholders

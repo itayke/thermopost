@@ -102,6 +102,12 @@ esp_err_t set_credentials(const char* ssid, const char* password);
 // comes down by itself on the next GOT_IP, exactly as it does at first boot.
 esp_err_t start_provisioning();
 
+// Take the setup AP back down without waiting for a connection — the Configure
+// page's Back button, which should not leave an open network behind it. Leaves
+// the config form serving on the LAN and touches no stored credentials. A no-op
+// when the AP is not up.
+void stop_provisioning();
+
 // Erase the stored credentials and drop the link, settling to Disabled rather
 // than reconnecting. Backs the Network screen's "Forget".
 void forget();

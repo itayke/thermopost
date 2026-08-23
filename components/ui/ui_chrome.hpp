@@ -89,8 +89,11 @@ struct PageChrome {
   lv_obj_t* footer;
 };
 
-// Build that frame into `scr`. Back always returns to the menu hub — every page
-// that uses this is one the hub opened.
-void build_page_chrome(lv_obj_t* scr, const char* title, PageChrome* c);
+// Build that frame into `scr`. Back returns to the menu hub, which is where every
+// page the hub opened should go. `on_back` overrides that for a page reached from
+// somewhere else, or one with something to undo on the way out — the Configure
+// page closes the setup network from there.
+void build_page_chrome(lv_obj_t* scr, const char* title, PageChrome* c,
+                       lv_event_cb_t on_back = nullptr);
 
 }  // namespace thermopost::ui
