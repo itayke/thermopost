@@ -65,7 +65,7 @@ constexpr const char* kConfirmText = "Sure?";
 // The footer answers "and where do I do the rest of this", which is the question
 // a page with no text entry on it invites.
 constexpr const char* kHintProvisioning = "join the post's Wi-Fi and open any page";
-constexpr const char* kHintForm         = "thresholds and the name are editable there too";
+constexpr const char* kHintForm         = "the name and the Sheet URL are editable there";
 constexpr const char* kSetupFailed      = "could not open the setup network";
 
 // Forget drops a credential that has to be retyped from a phone, and the button

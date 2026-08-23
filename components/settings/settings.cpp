@@ -34,7 +34,10 @@ constexpr unsigned char kAsciiLast  = 0x7E;
 // °F = °C · 9/5 + 32. Spelled out as a fraction and an offset so the conversion
 // reads as the formula it is, and so the span variants can borrow the fraction
 // without the offset.
-constexpr int32_t kC100PerDeg  = 100;
+// Hundredths of a degree per editing step. The steppers move in tenths, so the
+// four conversions below are the whole-degree ones with this constant changed —
+// nothing else about them depends on the resolution.
+constexpr int32_t kC100PerStep = 10;
 constexpr int32_t kFNum        = 9;     // Fahrenheit degrees per Celsius degree
 constexpr int32_t kFDen        = 5;
 constexpr int32_t kFOffsetC100 = 3200;  // 32.00 °F is 0 °C
@@ -338,32 +341,32 @@ const char* unit_suffix() {
   return s_cur.unit == TempUnit::Celsius ? "°C" : "°F";
 }
 
-int16_t display_deg(int16_t c100) {
-  if (s_cur.unit == TempUnit::Celsius) return clamp16(div_round(c100, kC100PerDeg));
-  // (c100·9/5 + 3200) / 100, folded into one division so the scale factor and the
-  // degree rounding don't each round separately and compound.
+int16_t display_tenths(int16_t c100) {
+  if (s_cur.unit == TempUnit::Celsius) return clamp16(div_round(c100, kC100PerStep));
+  // (c100·9/5 + 3200) / 10, folded into one division so the scale factor and the
+  // step rounding don't each round separately and compound.
   return clamp16(div_round(static_cast<int32_t>(c100) * kFNum + kFOffsetC100 * kFDen,
-                           kC100PerDeg * kFDen));
+                           kC100PerStep * kFDen));
 }
 
-int16_t c100_from_deg(int16_t deg) {
+int16_t c100_from_tenths(int16_t tenths) {
   const int32_t c100 =
       s_cur.unit == TempUnit::Celsius
-          ? static_cast<int32_t>(deg) * kC100PerDeg
-          : div_round((static_cast<int32_t>(deg) * kC100PerDeg - kFOffsetC100) * kFDen,
+          ? static_cast<int32_t>(tenths) * kC100PerStep
+          : div_round((static_cast<int32_t>(tenths) * kC100PerStep - kFOffsetC100) * kFDen,
                       kFNum);
   return static_cast<int16_t>(std::clamp<int32_t>(c100, kTempFloorC100, kTempCeilC100));
 }
 
-int16_t display_span_deg(int16_t c100) {
-  if (s_cur.unit == TempUnit::Celsius) return clamp16(div_round(c100, kC100PerDeg));
+int16_t display_span_tenths(int16_t c100) {
+  if (s_cur.unit == TempUnit::Celsius) return clamp16(div_round(c100, kC100PerStep));
   // No +32: an offset belongs to a point on the scale, not to a distance along it.
-  return clamp16(div_round(static_cast<int32_t>(c100) * kFNum, kC100PerDeg * kFDen));
+  return clamp16(div_round(static_cast<int32_t>(c100) * kFNum, kC100PerStep * kFDen));
 }
 
-int16_t c100_from_span_deg(int16_t deg) {
-  if (s_cur.unit == TempUnit::Celsius) return clamp16(static_cast<int32_t>(deg) * kC100PerDeg);
-  return clamp16(div_round(static_cast<int32_t>(deg) * kC100PerDeg * kFDen, kFNum));
+int16_t c100_from_span_tenths(int16_t tenths) {
+  if (s_cur.unit == TempUnit::Celsius) return clamp16(static_cast<int32_t>(tenths) * kC100PerStep);
+  return clamp16(div_round(static_cast<int32_t>(tenths) * kC100PerStep * kFDen, kFNum));
 }
 
 }  // namespace thermopost::settings

@@ -28,14 +28,16 @@
 // not grow anything reachable from outside the LAN without revisiting that.
 namespace thermopost::cloud::portal {
 
-// The submitted fields this component does *not* own. Everything else on the
-// form — interval, band, hysteresis, graph window, unit, sound, volume — is
-// applied here directly through settings::set_*, because those setters are the
-// clamp and the single source of truth and there is nothing to add to them.
+// Everything the form carries, which is deliberately only the fields that cannot
+// be entered on the panel: four are the radio's credentials and the Sheet's
+// endpoint, and the fifth is the post's name — the one free-text setting there is.
 //
-// These five are different: four are cloud's NVS and the radio's lifecycle, and
-// the name has to reach mDNS as well as NVS. They go back to cloud.cpp, which
-// owns both.
+// **The alarm band, the interval, the graph window, the unit, sound and volume are
+// not here on purpose.** They are numbers and toggles, which a touchscreen does
+// well, and the menu edits them at a resolution this form could only duplicate.
+// Controlling a *fleet* of posts is not what a per-device web page is for either —
+// that belongs on the upload response, where one edit can reach every post at
+// once. See the README's fleet section.
 //
 // An empty field means "unchanged" for url and token, "keep the current network"
 // for ssid, and "restore the MAC-derived default" for name (set_name's own

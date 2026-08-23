@@ -43,6 +43,19 @@ struct StepperState {
   lv_obj_t*   value_lbl;
   void (*on_change)();  // fired after each tap, after `value` has settled
 
+  // Per repeat while a disc is held down. Zero — the default — means taps only.
+  //
+  // Opt-in rather than automatic because most steppers here do not want it: the
+  // interval is ten table entries, the volume twenty taps end to end, and a
+  // repeat on either would overshoot faster than a finger can lift. It exists for
+  // the thresholds, where a tenth of a degree per tap is the right resolution and
+  // the wrong way to cross a range 1650 of them wide.
+  int16_t     hold_step;
+
+  // Set by build_stepper when the config asks for the unit on its own line;
+  // null otherwise, in which case the suffix is appended to the value instead.
+  lv_obj_t*   suffix_lbl;
+
   // Optional. When set, it renders the readout instead of "<value><suffix>", and
   // `value` is free to be an index rather than the quantity itself. That is what
   // makes a 10…3600 s interval usable: a table of ten sensible periods is ten taps
@@ -57,6 +70,15 @@ struct StepperCfg {
   const lv_font_t* value_font;
   int32_t          btn_dx;    // disc centre offset either side of the row centre
   int32_t          btn_diam;
+
+  // Put the unit on a second line under the number instead of after it.
+  //
+  // Forced by arithmetic, not taste: the discs leave 2·btn_dx − btn_diam of clear
+  // space between them, which on the thresholds page is 66 px, and "21.5°C" at
+  // Montserrat 24 wants about 78. The number alone fits; the pair does not. Moving
+  // the discs apart is not the alternative — that widens stepper_width past what
+  // the two-column layout asserts it can hold.
+  bool             suffix_below;
 };
 
 // Overall size of the container build_stepper() returns, so a caller can lay a page

@@ -118,8 +118,9 @@ esp_err_t set_volume_pct(uint8_t pct);
 //
 // Deliberately NOT reachable from the device menu. It is the only free-text
 // setting, and an on-screen keyboard on a 2.8" panel is the worst possible way to
-// enter one; the web config form owns it. Every other setting is a number or a
-// toggle and is editable from both.
+// enter one; the web config form owns it — along with the network and the Sheet
+// endpoint, and nothing else. Every setting above is a number or a toggle, which a
+// touchscreen does well, and the menu is the only place they are edited.
 esp_err_t set_name(const char* s);
 
 // The alarm band in the form alert::step() wants. Already passed through
@@ -141,22 +142,28 @@ inline float c100_to_c(int16_t c100) { return static_cast<float>(c100) / 100.0f;
 float display_value(int16_t c100);
 const char* unit_suffix();
 
-// --- Whole-degree editing, for the menu's steppers --------------------------
-// A stepper shows and steps whole degrees in the active unit while the stored
-// value stays hundredths of a °C; these are that round trip. They live here for
-// the same reason display_value() does — the unit setting is not allowed to leak
-// out of this component.
+// --- Tenth-of-a-degree editing, for the menu's steppers ---------------------
+// A stepper shows and steps tenths of a degree in the active unit while the
+// stored value stays hundredths of a °C; these are that round trip. They live
+// here for the same reason display_value() does — the unit setting is not allowed
+// to leak out of this component.
+//
+// Tenths rather than whole degrees because the device menu is now the *only* way
+// to set a threshold: the web config form carries the network and the post's
+// identity and nothing else, so a resolution the menu cannot reach is a
+// resolution the product does not have.
 //
 // A point on the scale and a span along it convert differently: 20 °C is 68 °F,
 // but a span of 20 °C is a span of 36 °F. Feeding a hysteresis through the
 // absolute pair would put it 32 degrees out, i.e. an alarm that can never clear,
 // so the two are separate functions rather than one with a flag.
 //
-// Both directions round to nearest, so a value edited in °F and read back in °C
-// lands on the nearest whole degree rather than drifting down by one each trip.
-int16_t display_deg(int16_t c100);
-int16_t c100_from_deg(int16_t deg);
-int16_t display_span_deg(int16_t c100);
-int16_t c100_from_span_deg(int16_t deg);
+// Both directions round to nearest, and no two display steps land on the same
+// stored value in either unit — 0.1 °C is exactly ten hundredths, 0.1 °F is about
+// 5.6 — so a value edited in one unit and read back in the other does not drift.
+int16_t display_tenths(int16_t c100);
+int16_t c100_from_tenths(int16_t tenths);
+int16_t display_span_tenths(int16_t c100);
+int16_t c100_from_span_tenths(int16_t tenths);
 
 }  // namespace thermopost::settings

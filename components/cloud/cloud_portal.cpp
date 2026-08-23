@@ -15,7 +15,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -172,18 +171,6 @@ void append_escaped(std::string& out, const char* in) {
 
 void append_int(std::string& out, long v) { out += std::to_string(v); }
 
-// Hundredths of a degree as a decimal, by integer arithmetic — the stored value
-// IS exact hundredths and routing it through a double to print it could only
-// introduce error. Same reasoning as cloud_json::fmt_c100.
-void append_c100(std::string& out, int16_t c100) {
-  const bool neg = c100 < 0;
-  const int32_t mag = neg ? -static_cast<int32_t>(c100) : static_cast<int32_t>(c100);
-  char buf[16];
-  std::snprintf(buf, sizeof(buf), "%s%ld.%02ld", neg ? "-" : "",
-                static_cast<long>(mag / 100), static_cast<long>(mag % 100));
-  out += buf;
-}
-
 // Blocking scan of nearby networks, cached after the first success. Runs in the
 // httpd task, never the LVGL one, so the ~1.5 s block is invisible on screen.
 //
@@ -260,9 +247,6 @@ std::string build_form_html() {
        "input,select{width:100%;box-sizing:border-box;padding:11px;border-radius:8px;"
        "border:1px solid #444;background:#1c1c1c;color:#eee;font-size:16px}"
        "select{margin-bottom:8px}"
-       ".row{display:flex;gap:10px}.row>div{flex:1}"
-       ".chk{display:flex;align-items:center;gap:10px;margin-top:16px}"
-       ".chk input{width:auto}"
        "button{margin-top:26px;width:100%;padding:13px;border:0;border-radius:24px;"
        "background:#C88036;color:#111;font-size:16px;font-weight:600}"
        "small{color:#888;font-weight:400}"
@@ -286,7 +270,7 @@ std::string build_form_html() {
   } else {
     append_network_current(h);
   }
-  h += "<label>Password <small>(blank keeps the stored one)</small></label>"
+  h += "<label>Password <small>(blank leaves the current network alone)</small></label>"
        "<input name=pass type=password autocomplete=off>"
 
        "<h2>Sheet</h2>"
@@ -302,60 +286,8 @@ std::string build_form_html() {
        "<label>Token <small>(blank keeps the current one)</small></label>"
        "<input name=token autocomplete=off>"
 
-       "<h2>Monitoring</h2>"
-       "<p class=sub>All temperatures in &deg;C &mdash; that is what the post stores, "
-       "whatever the screen is set to show.</p>"
-       "<div class=row>"
-       "<div><label>Alarm below</label><input name=min type=number step=0.01 value=\"";
-  append_c100(h, s.min_c100);
-  h += "\"></div>"
-       "<div><label>Alarm above</label><input name=max type=number step=0.01 value=\"";
-  append_c100(h, s.max_c100);
-  h += "\"></div></div>"
-       "<label>Hysteresis <small>(margin the reading must clear to recover)</small></label>"
-       "<input name=hyst type=number step=0.01 value=\"";
-  append_c100(h, s.hysteresis_c100);
-  h += "\">"
-       "<div class=row>"
-       "<div><label>Interval <small>(s)</small></label>"
-       "<input name=interval type=number min=";
-  append_int(h, settings::kIntervalMinS);
-  h += " max=";
-  append_int(h, settings::kIntervalMaxS);
-  h += " value=";
-  append_int(h, s.interval_s);
-  h += "></div>"
-       "<div><label>Graph points</label>"
-       "<input name=graph type=number min=";
-  append_int(h, settings::kGraphPointsMin);
-  h += " max=";
-  append_int(h, settings::kGraphPointsMax);
-  h += " value=";
-  append_int(h, s.graph_points);
-  h += "></div></div>"
-
-       "<h2>Display &amp; sound</h2>"
-       "<label>Show temperatures in</label>"
-       "<select name=unit>"
-       "<option value=c";
-  if (s.unit == settings::TempUnit::Celsius) h += " selected";
-  h += ">Celsius</option><option value=f";
-  if (s.unit == settings::TempUnit::Fahrenheit) h += " selected";
-  h += ">Fahrenheit</option></select>"
-       // The hidden field is what makes the checkbox honest: an unchecked box
-       // submits nothing at all, so without it "off" would be indistinguishable
-       // from "field absent" and the alarm could never be muted from here. Both
-       // keys arrive when it is checked and the later one wins.
-       "<input type=hidden name=sound value=0>"
-       "<div class=chk><input type=checkbox name=sound value=1 id=snd";
-  if (s.sound_enabled) h += " checked";
-  h += "><label for=snd style=\"margin:0\">Alarm sound</label></div>"
-       "<label>Volume <small>(%)</small></label>"
-       "<input name=volume type=number min=0 max=";
-  append_int(h, settings::kVolumeMaxPct);
-  h += " value=";
-  append_int(h, s.volume_pct);
-  h += ">"
+       "<p class=sub>Alarm thresholds, the sample interval, units and sound live on "
+       "the post's own screen, under MENU.</p>"
        "<button type=submit>";
   h += provisioning ? "Connect" : "Save";
   h += "</button></form></div></body></html>";
@@ -421,60 +353,8 @@ void set_field(char* dst, size_t cap, const char* src) {
   dst[n] = '\0';
 }
 
-// A decimal degree count to hundredths, by hand rather than through strtod: the
-// destination is exact hundredths, and a float round trip can only lose to it.
-// Accepts "21", "21.5", "-0.05"; more than two decimal places are truncated.
-bool parse_c100(const char* s, int16_t& out) {
-  if (s == nullptr || s[0] == '\0') return false;
-  const char* p = s;
-  bool neg = false;
-  if (*p == '+' || *p == '-') { neg = (*p == '-'); ++p; }
-  if (*p == '\0') return false;
-  long whole = 0;
-  bool any = false;
-  for (; *p >= '0' && *p <= '9'; ++p) {
-    whole = whole * 10 + (*p - '0');
-    any = true;
-    if (whole > INT16_MAX) return false;  // far past the sensor's range already
-  }
-  long frac = 0;
-  if (*p == '.' || *p == ',') {
-    ++p;
-    for (int i = 0; i < 2; ++i) {
-      const bool digit = (*p >= '0' && *p <= '9');
-      frac = frac * 10 + (digit ? (*p - '0') : 0);
-      if (digit) { ++p; any = true; }
-    }
-    while (*p >= '0' && *p <= '9') ++p;  // beyond hundredths: dropped
-  }
-  if (!any || *p != '\0') return false;
-  const long v = whole * 100 + frac;
-  if (v > INT16_MAX) return false;
-  out = static_cast<int16_t>(neg ? -v : v);
-  return true;
-}
-
-// A plain unsigned field. Out-of-range values are left to the settings setters
-// to clamp — they are the single place that owns every range.
-bool parse_u32(const char* s, uint32_t& out) {
-  if (s == nullptr || s[0] == '\0') return false;
-  char* end = nullptr;
-  const long v = std::strtol(s, &end, 10);
-  if (end == s || *end != '\0' || v < 0) return false;
-  out = static_cast<uint32_t>(v);
-  return true;
-}
-
-// Everything the form can change, split by who owns it. `net` goes back to
-// cloud.cpp; the rest is applied here through the settings setters.
-struct Parsed {
-  Submission net;
-  settings::Settings cfg;  // seeded from the current values, overwritten per key
-};
-
-void parse_form(const char* body, size_t len, Parsed& p) {
-  p.net = {};
-  p.cfg = settings::get();
+void parse_form(const char* body, size_t len, Submission& sub) {
+  sub = {};
   size_t i = 0;
   while (i < len) {
     const size_t ks = i;
@@ -492,38 +372,15 @@ void parse_form(const char* body, size_t len, Parsed& p) {
       return std::strlen(k) == kl && std::memcmp(body + ks, k, kl) == 0;
     };
 
-    uint32_t n = 0;
-    int16_t c = 0;
-    if      (key_is("name"))  set_field(p.net.name,     sizeof(p.net.name),     val);
-    else if (key_is("ssid"))  set_field(p.net.ssid,     sizeof(p.net.ssid),     val);
+    if      (key_is("name"))  set_field(sub.name,     sizeof(sub.name),     val);
+    else if (key_is("ssid"))  set_field(sub.ssid,     sizeof(sub.ssid),     val);
     // Free text beats the dropdown when filled — it is the hidden-network path,
     // and over the LAN it is the only network field on the form.
-    else if (key_is("ssidm")) { if (val[0] != '\0') set_field(p.net.ssid, sizeof(p.net.ssid), val); }
-    else if (key_is("pass"))  set_field(p.net.password, sizeof(p.net.password), val);
-    else if (key_is("url"))   set_field(p.net.url,      sizeof(p.net.url),      val);
-    else if (key_is("token")) set_field(p.net.token,    sizeof(p.net.token),    val);
-    else if (key_is("min"))   { if (parse_c100(val, c)) p.cfg.min_c100 = c; }
-    else if (key_is("max"))   { if (parse_c100(val, c)) p.cfg.max_c100 = c; }
-    else if (key_is("hyst"))  { if (parse_c100(val, c)) p.cfg.hysteresis_c100 = c; }
-    else if (key_is("interval")) { if (parse_u32(val, n)) p.cfg.interval_s = static_cast<uint16_t>(std::min<uint32_t>(n, UINT16_MAX)); }
-    else if (key_is("graph"))    { if (parse_u32(val, n)) p.cfg.graph_points = static_cast<uint16_t>(std::min<uint32_t>(n, UINT16_MAX)); }
-    else if (key_is("volume"))   { if (parse_u32(val, n)) p.cfg.volume_pct = static_cast<uint8_t>(std::min<uint32_t>(n, UINT8_MAX)); }
-    else if (key_is("unit"))     { p.cfg.unit = (val[0] == 'f') ? settings::TempUnit::Fahrenheit
-                                                                : settings::TempUnit::Celsius; }
-    else if (key_is("sound"))    { p.cfg.sound_enabled = (val[0] == '1'); }
+    else if (key_is("ssidm")) { if (val[0] != '\0') set_field(sub.ssid, sizeof(sub.ssid), val); }
+    else if (key_is("pass"))  set_field(sub.password, sizeof(sub.password), val);
+    else if (key_is("url"))   set_field(sub.url,      sizeof(sub.url),      val);
+    else if (key_is("token")) set_field(sub.token,    sizeof(sub.token),    val);
   }
-}
-
-// Each setter clamps and is a no-op when unchanged, so passing the whole set
-// through unconditionally costs nothing and needs no dirty tracking.
-void apply_settings(const settings::Settings& c) {
-  settings::set_band(c.min_c100, c.max_c100);
-  settings::set_hysteresis_c100(c.hysteresis_c100);
-  settings::set_interval_s(c.interval_s);
-  settings::set_graph_points(c.graph_points);
-  settings::set_unit(c.unit);
-  settings::set_sound_enabled(c.sound_enabled);
-  settings::set_volume_pct(c.volume_pct);
 }
 
 esp_err_t save_post(httpd_req_t* req) {
@@ -540,29 +397,28 @@ esp_err_t save_post(httpd_req_t* req) {
   }
   body[got] = '\0';
 
-  Parsed p;
-  parse_form(body, static_cast<size_t>(got), p);
+  Submission sub;
+  parse_form(body, static_cast<size_t>(got), sub);
 
   // A network has to be chosen only while the setup AP is what the browser is
   // talking through. Over the LAN the post is already on a network and a blank
   // field means "stay on it".
-  if (s_ap_up && p.net.ssid[0] == '\0') {
+  if (s_ap_up && sub.ssid[0] == '\0') {
     return send_message(req, "Setup error", "Please choose a Wi-Fi network.");
   }
-  if (p.net.url[0] != '\0' && std::strncmp(p.net.url, "https://", 8) != 0) {
+  if (sub.url[0] != '\0' && std::strncmp(sub.url, "https://", 8) != 0) {
     return send_message(req, "Setup error", "The endpoint URL must start with https://");
   }
 
-  apply_settings(p.cfg);
-  // The network half goes back before the response is rendered, so a connect is
-  // already under way as the browser paints the confirmation.
-  if (s_cb != nullptr) s_cb(p.net);
+  // Handed back before the response is rendered, so a connect is already under way
+  // as the browser paints the confirmation.
+  if (s_cb != nullptr) s_cb(sub);
 
-  if (p.net.ssid[0] != '\0' && s_ap_up) {
+  if (sub.ssid[0] != '\0' && s_ap_up) {
     char msg[160];  // ~90 characters of fixed text plus a 32-character SSID
     std::snprintf(msg, sizeof(msg),
                   "Connecting to \"%s\". This setup network will disappear once the "
-                  "post is online.", p.net.ssid);
+                  "post is online.", sub.ssid);
     return send_message(req, "Connecting\xE2\x80\xA6", msg);
   }
   return send_message(req, "Saved", "The post has taken the new settings.");

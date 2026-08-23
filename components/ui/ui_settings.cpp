@@ -26,7 +26,15 @@ constexpr size_t kSpanTextMax = 32;
 // Two columns, two rows. A cell is a caption with its control underneath, and the
 // cell is as wide as the widest control it can hold — the stepper, click area
 // included — so a caption can never be wider than the thing it labels.
-constexpr StepperCfg kStepperCfg = {kFontTitle, 50, 34};
+constexpr StepperCfg kStepperCfg = {kFontTitle, 50, 34, /*suffix_below=*/false};
+
+// Same geometry, unit on its own line. The discs leave 2*50 - 34 = 66 px between
+// them; "21.5" fits that at kFontTitle and "21.5°C" does not, and the discs cannot
+// move apart without breaking the two-column assert below.
+constexpr StepperCfg kTempStepperCfg = {kFontTitle, 50, 34, /*suffix_below=*/true};
+static_assert(stepper_width(kTempStepperCfg) == stepper_width(kStepperCfg) &&
+                  stepper_height(kTempStepperCfg) == stepper_height(kStepperCfg),
+              "the temperature stepper must stay the size the page geometry assumes");
 
 constexpr int32_t kCaptionGap = 2;
 constexpr int32_t kRow1Y = 48;
@@ -74,10 +82,16 @@ static_assert(kToggleW + 2 * kToggleExtClick <= kCellW,
               "above no longer speaks for it");
 
 // --- Threshold coupling -----------------------------------------------------
-// Minimum gap between the two thresholds, in whole display degrees. One is enough:
-// the point is only that the pair cannot cross or collapse to a zero-width band,
-// which would leave alert::sanitize() with nothing to work with.
-constexpr int16_t kBandMinDeg = 1;
+// Minimum gap between the two thresholds, in tenths of a display degree. A whole
+// degree, not a tenth: the pair must not cross, and a band 0.1 wide is one nothing
+// could sit inside — every reading would be an alarm in one direction or the other.
+constexpr int16_t kBandMinTenths = 10;
+
+// How long the page waits after the last tap before writing to NVS. A held disc
+// steps ten times a second, and persisting each one would be ten flash writes a
+// second for as long as a finger is down. Long enough to swallow a hold, short
+// enough that letting go feels like it committed.
+constexpr uint32_t kPersistDelayMs = 400;
 
 // --- Interval table ---------------------------------------------------------
 // The stepper's value is an index into this. Ten taps covers ten seconds to an
@@ -115,10 +129,11 @@ lv_obj_t* build_caption(lv_obj_t* group, int32_t cx, int32_t y, const char* text
 // A stepper cell: caption, then the control under it. Returns the control's
 // container so the caller can add it to the fade set.
 lv_obj_t* build_stepper_cell(lv_obj_t* group, int32_t cx, int32_t y, const char* caption,
-                             StepperState* st, lv_obj_t** out_caption) {
+                             StepperState* st, lv_obj_t** out_caption,
+                             const StepperCfg& cfg = kStepperCfg) {
   *out_caption = build_caption(group, cx, y, caption);
-  lv_obj_t* row = build_stepper(group, st, kStepperCfg);
-  place(row, cx, stepper_width(kStepperCfg), y + kFontBodyH + kCaptionGap);
+  lv_obj_t* row = build_stepper(group, st, cfg);
+  place(row, cx, stepper_width(cfg), y + kFontBodyH + kCaptionGap);
   return row;
 }
 
@@ -157,103 +172,139 @@ StepperState  s_min = {};
 StepperState  s_max = {};
 StepperState  s_hyst = {};
 
-// Largest whole-degree hysteresis whose *stored* value still fits under
+lv_timer_t* s_persist = nullptr;
+
+// While the page is open the three steppers are the working copy, and NVS is
+// written from them once the taps stop. Everything below therefore derives from
+// the steppers rather than from settings::get() — reading back a value that has
+// not been written yet is how a coupled bound ends up one tap behind.
+int16_t min_c100()  { return settings::c100_from_tenths(s_min.value); }
+int16_t max_c100()  { return settings::c100_from_tenths(s_max.value); }
+int16_t hyst_c100() { return settings::c100_from_span_tenths(s_hyst.value); }
+
+// Largest hysteresis, in display tenths, whose *stored* value still fits under
 // alert::sanitize()'s half-band cap. Rounded down and then verified, because
-// rounding the cap to the nearest degree can land a degree above it — and a stepper
+// rounding the cap to the nearest tenth can land a tenth above it — and a stepper
 // whose top value gets silently clamped on its way to NVS is precisely the failure
 // this coupling exists to prevent.
-int16_t hysteresis_ceiling_deg(int16_t min_c100, int16_t max_c100) {
-  const int16_t cap = static_cast<int16_t>((max_c100 - min_c100) / 2);
-  int16_t deg = settings::display_span_deg(cap);
-  while (deg > 0 && settings::c100_from_span_deg(deg) > cap) --deg;
-  return deg;
+int16_t hysteresis_ceiling_tenths(int16_t lo_c100, int16_t hi_c100) {
+  const int16_t cap = static_cast<int16_t>((hi_c100 - lo_c100) / 2);
+  int16_t tenths = settings::display_span_tenths(cap);
+  while (tenths > 0 && settings::c100_from_span_tenths(tenths) > cap) --tenths;
+  return tenths;
 }
 
+// One tenth of a display degree, rendered. Written by hand rather than through a
+// float: the value IS exact tenths, and -0.5 must not come out as "0.-5" — C
+// division truncates toward zero, so anything between -9 and 0 has a whole part of
+// zero and loses the sign with it.
+void format_tenths(char* out, size_t n, int16_t v) {
+  const int whole = v / 10;
+  const int frac = (v < 0 ? -v : v) % 10;
+  const char* sign = (v < 0 && whole == 0) ? "-" : "";
+  std::snprintf(out, n, "%s%d.%d", sign, whole, frac);
+}
+
+void write_through() {
+  settings::set_band(min_c100(), max_c100());
+  settings::set_hysteresis_c100(hyst_c100());
+}
+
+void on_persist_due(lv_timer_t*) {
+  s_persist = nullptr;  // one-shot: LVGL deletes it after this returns
+  write_through();
+}
+
+void schedule_persist() {
+  if (s_persist != nullptr) {
+    lv_timer_reset(s_persist);
+    return;
+  }
+  s_persist = lv_timer_create(on_persist_due, kPersistDelayMs, nullptr);
+  lv_timer_set_repeat_count(s_persist, 1);
+}
+
+// Write now and cancel the pending timer. For leaving the page inside the delay,
+// which would otherwise drop the last edit on the floor.
+void flush_persist() {
+  if (s_persist == nullptr) return;
+  lv_timer_delete(s_persist);
+  s_persist = nullptr;
+  write_through();
+}
+
+// The stored Celsius hundredths, always, whatever the steppers are showing. In °C
+// that is the same number with one more decimal; in °F it is the payoff — a band
+// set in Fahrenheit is not a round number of Celsius, and this is where that shows
+// rather than looking like drift somewhere else.
 void refresh_footer() {
-  const settings::Settings s = settings::get();
   char text[kTextMax];
-  // The stored hundredths, plainly, because the steppers above show whole degrees:
-  // a band set in °F is not a round number of °C, and this is where that shows
-  // rather than looking like drift.
-  // The margin is a span, so it is the difference between two converted points
-  // rather than one converted value — 0.5 °C of hysteresis is 0.9 °F of it, not
-  // 32.9.
-  const int16_t hyst_ref = static_cast<int16_t>(s.min_c100 + s.hysteresis_c100);
-  std::snprintf(text, sizeof(text), "stored %.1f to %.1f, clears by %.1f %s",
-                static_cast<double>(settings::display_value(s.min_c100)),
-                static_cast<double>(settings::display_value(s.max_c100)),
-                static_cast<double>(settings::display_value(hyst_ref) -
-                                    settings::display_value(s.min_c100)),
-                settings::unit_suffix());
+  std::snprintf(text, sizeof(text), "stored %.2f to %.2f C, clears by %.2f",
+                static_cast<double>(settings::c100_to_c(min_c100())),
+                static_cast<double>(settings::c100_to_c(max_c100())),
+                static_cast<double>(settings::c100_to_c(hyst_c100())));
   lv_label_set_text(s_page.footer, text);
 }
 
-// Re-derive every bound from what is actually stored. Called on show and after each
-// tap, so the coupling holds no matter which of the three moved.
+// Re-derive every bound from the steppers. Called on show and after each tap, so
+// the coupling holds no matter which of the three moved.
 void rebound() {
-  const settings::Settings s = settings::get();
-  const int16_t min_deg = settings::display_deg(s.min_c100);
-  const int16_t max_deg = settings::display_deg(s.max_c100);
-
-  s_min.min = settings::display_deg(settings::kTempFloorC100);
-  s_min.max = static_cast<int16_t>(max_deg - kBandMinDeg);
-  s_max.min = static_cast<int16_t>(min_deg + kBandMinDeg);
-  s_max.max = settings::display_deg(settings::kTempCeilC100);
+  s_min.min = settings::display_tenths(settings::kTempFloorC100);
+  s_min.max = static_cast<int16_t>(s_max.value - kBandMinTenths);
+  s_max.min = static_cast<int16_t>(s_min.value + kBandMinTenths);
+  s_max.max = settings::display_tenths(settings::kTempCeilC100);
   s_hyst.min = 0;
-  s_hyst.max = hysteresis_ceiling_deg(s.min_c100, s.max_c100);
+  s_hyst.max = hysteresis_ceiling_tenths(min_c100(), max_c100());
 
-  // Only the hysteresis is clamped here. A narrowed band can leave the stored value
-  // above its own new ceiling; sanitize() would cap it for the alarm logic anyway,
-  // so writing the capped value now means the stepper and NVS agree rather than the
-  // screen showing a number the state machine has quietly stopped using.
-  if (stepper_clamp(&s_hyst)) {
-    settings::set_hysteresis_c100(settings::c100_from_span_deg(s_hyst.value));
-  }
-
-  // The two thresholds are deliberately NOT clamped to match. Two stored values a
-  // fraction apart — 24.5 and 25.0 — round to the same whole degree, which leaves
-  // the minimum sitting one above its own ceiling. Pulling the display down to
-  // satisfy the bound would show a number that isn't what is stored; leaving it
-  // alone just means (+) has nowhere to go, which is the truth. The footer prints
-  // the stored hundredths, so the apparently-equal pair is explained rather than
-  // mysterious.
+  // Only the hysteresis is clamped. A narrowed band can leave it above its own new
+  // ceiling; sanitize() would cap it for the alarm logic anyway, so pulling the
+  // stepper down now means the screen and NVS agree rather than the screen showing
+  // a number the state machine has quietly stopped using.
+  //
+  // The two thresholds are deliberately not clamped to match each other. Their
+  // bounds are derived from each other's *current* value, so neither can be out of
+  // range in the first place — and pulling one to satisfy the other would move a
+  // threshold nobody touched.
+  if (stepper_clamp(&s_hyst)) schedule_persist();
 }
 
-// Each stepper writes only its own field, taking its sibling from what is stored
-// rather than from the sibling stepper. The difference matters: a stored 20.5 °C
-// minimum displays as 21, and writing that back while the user was only touching
-// the maximum would move a threshold they never touched.
-void on_min_change() {
-  settings::set_band(settings::c100_from_deg(s_min.value), settings::get().max_c100);
+// One handler for both thresholds: the deferred write takes the pair from the
+// steppers, so there is no longer a version of this that touches only one of them.
+//
+// The precision that makes that safe is the point of tenths. Under whole degrees a
+// stored 20.5 displayed as 21, and writing the display back while the user was
+// only touching the maximum moved the minimum half a degree. A tenth of a display
+// degree is at most 0.06 °C — below the MCP9808's own resolution — so the round
+// trip is no longer something a threshold can be moved by.
+void on_band_change() {
   rebound();
   stepper_refresh(&s_hyst);
   refresh_footer();
-}
-
-void on_max_change() {
-  settings::set_band(settings::get().min_c100, settings::c100_from_deg(s_max.value));
-  rebound();
-  stepper_refresh(&s_hyst);
-  refresh_footer();
+  schedule_persist();
 }
 
 void on_hyst_change() {
-  settings::set_hysteresis_c100(settings::c100_from_span_deg(s_hyst.value));
   refresh_footer();
+  schedule_persist();
 }
 
 void load() {
+  // Anything still pending belongs to the visit that scheduled it, and this reload
+  // is about to overwrite the steppers it would have been written from.
+  flush_persist();
+
   const settings::Settings s = settings::get();
   const char* suffix = settings::unit_suffix();
   s_min.suffix = suffix;
   s_max.suffix = suffix;
-  // No suffix on a span: "0.5 °C" would be right but "1°C" for a margin reads as a
-  // temperature rather than a distance, and the caption already says which it is.
+  // No suffix on a span: "0.5 °C" would be right, but a unit under a margin reads
+  // as a temperature rather than a distance, and the caption already says which it
+  // is. The empty label still holds the number on its siblings' baseline.
   s_hyst.suffix = "";
 
-  s_min.value  = settings::display_deg(s.min_c100);
-  s_max.value  = settings::display_deg(s.max_c100);
-  s_hyst.value = settings::display_span_deg(s.hysteresis_c100);
+  s_min.value  = settings::display_tenths(s.min_c100);
+  s_max.value  = settings::display_tenths(s.max_c100);
+  s_hyst.value = settings::display_span_tenths(s.hysteresis_c100);
 
   rebound();
   stepper_refresh(&s_min);
@@ -262,14 +313,25 @@ void load() {
   refresh_footer();
 }
 
-void build(lv_obj_t* scr) {
-  build_page_chrome(scr, "Thresholds", &s_page);
+// Leaving inside the debounce window would otherwise drop the last edit.
+void on_back(lv_event_t*) {
+  flush_persist();
+  nav::go(nav::Screen::Menu);
+}
 
-  s_min.step = 1;
-  s_min.on_change = on_min_change;
-  s_max.step = 1;
-  s_max.on_change = on_max_change;
-  s_hyst.step = 1;
+void build(lv_obj_t* scr) {
+  build_page_chrome(scr, "Thresholds", &s_page, on_back);
+
+  // A tenth per tap, a tenth per repeat, and ten times that once a hold has run
+  // past kHoldFastAfter — see ui_stepper.cpp. Taps alone would be 1650 of them
+  // across the sensor's range.
+  for (StepperState* st : {&s_min, &s_max, &s_hyst}) {
+    st->step = 1;
+    st->hold_step = 1;
+    st->format = format_tenths;
+  }
+  s_min.on_change = on_band_change;
+  s_max.on_change = on_band_change;
   s_hyst.on_change = on_hyst_change;
 
   lv_obj_t* fade[nav::kMaxFadeWidgets];
@@ -279,13 +341,13 @@ void build(lv_obj_t* scr) {
   fade[n++] = s_page.footer;
   lv_obj_t* cap = nullptr;
   fade[n++] = build_stepper_cell(s_page.group, kColLeftCx, kRow1Y, "Alarm below",
-                                 &s_min, &cap);
+                                 &s_min, &cap, kTempStepperCfg);
   fade[n++] = cap;
   fade[n++] = build_stepper_cell(s_page.group, kColRightCx, kRow1Y, "Alarm above",
-                                 &s_max, &cap);
+                                 &s_max, &cap, kTempStepperCfg);
   fade[n++] = cap;
   fade[n++] = build_stepper_cell(s_page.group, kColMidCx, kRow2Y, "Recovery margin",
-                                 &s_hyst, &cap);
+                                 &s_hyst, &cap, kTempStepperCfg);
   fade[n++] = cap;
 
   load();

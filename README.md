@@ -298,16 +298,33 @@ is coupled to both, because `sanitize()` caps it at half the band — so narrowi
 band lowers that stepper's ceiling, and the new value is written rather than left on
 screen as a number the alarm logic has stopped using.
 
-Two consequences of stepping in whole degrees, both deliberate:
+**Thresholds step in tenths of a degree, and that is a consequence of the form's
+scope, not a preference.** The web form carries the network and the post's identity
+and nothing else, so the menu is the *only* way to set a threshold — and a resolution
+the menu cannot reach is a resolution the product does not have. Whole degrees would
+have made 21.5 °C unreachable on any path.
+
+Two things follow:
 
 - The **stored value stays hundredths of a °C**. Each tap converts the displayed
-  integer back, which keeps the standing promise that °F exists only at the point of
+  tenth back, which keeps the standing promise that °F exists only at the point of
   display. A band set in °F therefore isn't a round number of °C — correct behaviour,
-  not drift, and the footer prints the stored value so it is visible rather than
-  mysterious.
-- A stepper writes **only its own field**, taking its sibling from what is stored. A
-  stored 20.5 °C minimum displays as 21, and writing that back while the user was
-  only touching the maximum would move a threshold they never touched.
+  not drift, and the footer prints the stored Celsius to two decimals so it is
+  visible rather than mysterious.
+- **Holding a disc repeats**, at LVGL's 100 ms cadence, and shifts to ten times the
+  step after two seconds of holding. Without it, 0.1 per tap is 1650 taps across the
+  sensor's range — a resolution that exists on paper and not in the hand. Repeats are
+  opt-in per stepper: the interval is a ten-entry table and the volume is twenty taps
+  end to end, and a repeat on either would overshoot faster than a finger can lift.
+- **NVS is written 400 ms after the last tap**, not on each one. A held disc steps ten
+  times a second, and persisting every step would be ten flash writes a second for as
+  long as a finger is down. While the page is open the steppers are the working copy;
+  leaving it flushes, so an edit inside the window is never dropped.
+
+The unit label sits on its own line under the number rather than after it, for a
+reason worth recording: the discs leave 66 px of clear space between them, `"21.5"`
+fits that at the title font and `"21.5°C"` does not — and moving the discs apart
+would push the control past the width the two-column layout asserts it can hold.
 
 The interval stepper walks a table — 10 s, 15 s, 30 s, 1 m, 2 m, 5 m, 10 m, 15 m,
 30 m, 1 h — instead of counting seconds. Ten taps covers the whole range; any fixed
@@ -342,9 +359,10 @@ the phase clock so a phase ends after exactly one fade duration however many wid
 took part. A transparent click-eater covers the screen for the swap's duration, so a
 stray tap can't land on a page that is already half gone.
 
-Each page re-reads its values at the midpoint, while it is still hidden. That is what
-keeps a page opened while the web form writes the same setting from showing — and then
-clobbering — a stale number. Both paths go through the same
+Each page re-reads its values at the midpoint, while it is still hidden. Nothing else
+writes a setting today — the web form carries the network and the post's identity
+only — but the moment config arrives on the upload response, a page left open would
+otherwise show, and then clobber, a stale number. Every writer goes through the same
 `settings::set_*` setters, so NVS stays the single source of truth.
 
 ### The post's name
@@ -430,10 +448,9 @@ and nothing else has to be watched for.
 
 **What is different here is the lifetime.** espressopost's HTTP server existed only
 while the setup AP was up: the first `GOT_IP` tore down the AP, the DNS responder
-and the server together, because provisioning was all the form ever did. Here the
-same form is also where thresholds, the interval and the post's name are edited, so
-that model would mean rejoining a setup AP to adjust a number. The two halves are
-therefore split:
+and the server together. Here the same form is also where a deployed post is renamed
+and repointed at a different Sheet, and neither should cost a credential round trip —
+so the two halves are split:
 
 | | lifetime |
 |---|---|
@@ -446,30 +463,66 @@ the form, not a second copy of it. After provisioning the post is reachable at
 beside the `.local` name because some networks drop multicast and a post that could
 only offer a name it can't resolve has no address to give at all.
 
-The form carries every setting, each **pre-filled from the current value**, so it
-doubles as a way to read a post's configuration. The token is the one exception and
-is never echoed back. Two deliberate choices in it:
+**The form carries only what a touchscreen can't do**, and the rule is worth stating
+because it is what keeps the two surfaces from overlapping:
 
-- **Temperatures are always in °C**, whatever the screen is set to show. The stored
-  value is hundredths of a °C; a form that rendered °F would have to interpret its
-  own numbers in whichever unit was selected *when the page was drawn*, and a unit
-  change submitted alongside a threshold change would be genuinely ambiguous. The
-  unit select on the form sets what the panel displays and nothing else.
-- **Re-submitting the network you are already on does nothing.** The field comes back
-  prefilled, and re-applying credentials drops the link — so nudging a threshold from
-  a browser would otherwise cost a reconnect every time.
+> The form owns what you can't type on a panel, and what identifies the post. The
+> menu owns what you tune.
 
-Both write paths — form and menu — go through the same `settings::set_*` setters, so
-NVS stays the single source of truth. One loose end accepted rather than solved: a
-menu page left open while the form writes the same setting shows a stale value until
-it is re-entered. Screens re-read on show, which covers the realistic case; a change
-bus would be over-engineering for a single-user device.
+So: the post's name, the network, the password, the `/exec` URL and the token — and
+nothing else. Thresholds, the interval, the graph window, the unit, sound and volume
+are numbers and toggles, which a 2.8" touchscreen does well, and they live under
+MENU. Every field is **pre-filled from the current value**, so the form doubles as a
+way to read a post's identity; the token is the one exception and is never echoed
+back.
 
-Worth being clear-eyed about the tradeoff: an always-listening HTTP server that
-writes settings, on plain HTTP, with no auth. On a home or brewery LAN that is the
-same exposure the setup AP already accepts, and the blast radius is a temperature
-threshold. It should not grow anything reachable from outside the LAN without
-revisiting that.
+That boundary is why the settings fields are gone rather than never written — they
+were there, and they were the wrong answer to the right problem. See the fleet
+section below.
+
+One behaviour worth knowing: **re-submitting the network you are already on does
+nothing.** The field comes back prefilled and re-applying credentials drops the link,
+so fixing a typo in the name would otherwise cost a reconnect every time.
+
+The server outliving the AP now buys exactly two things: renaming a deployed post,
+and repointing it at a different Sheet, neither of which should cost a credential
+round trip. That is a smaller justification than it had when the form wrote settings,
+and it is the right size for what is left — an always-listening HTTP server on plain
+HTTP with no auth, whose blast radius is now a post's name and its endpoint. It
+should not grow anything reachable from outside the LAN without revisiting that.
+
+### Controlling a fleet
+
+**A per-device web page is not a fleet tool, and that is what the settings fields on
+the form were trying to be.** Five tanks meant five tabs, five round trips, and five
+chances to type a different number — which is precisely the case that wanted "the
+same band everywhere".
+
+The shape that fits is **config on the upload response**. Every post already POSTs a
+batch on its own cadence; that channel is already outbound, already survives NAT,
+already retries, and already knows which device is speaking. The reply can carry a
+desired configuration, and a post applies it through the same `settings::set_*`
+setters everything else uses. Fill a column down in the Sheet and the whole group
+moves together.
+
+Apps Script can do this today — `doPost` returns arbitrary JSON and has the Sheet as
+its state store, so a `config` tab keyed by device id is enough. A dedicated service
+would buy push latency and real authentication, not the capability.
+
+Three things to settle when it is built, recorded here because they are cheap now and
+expensive later:
+
+- **Who wins.** The menu changes the same values locally. A generation counter is the
+  usual answer: the post sends its config generation with each batch, the server
+  replies only when it holds a newer one, and a local edit bumps it. Without that,
+  either a local change is clobbered every minute by stale desired state, or a server
+  change re-lands forever.
+- **A pushed config is untrusted input**, exactly like a form post. It goes through
+  the setters, which already clamp — not around them.
+- **Two things can never arrive this way.** Wi-Fi credentials, because they *are* the
+  channel; and the endpoint URL, since a wrong one cannot deliver its own correction.
+  Those stay on the form permanently, which is a better argument for the form's
+  existence than "you can also set thresholds there".
 
 ### Mirroring to a Sheet
 
@@ -636,6 +689,7 @@ returns.
 | ✅ Built | the upload queue — batched POSTs to Apps Script, NVS high-water mark, host-tested JSON |
 | ✅ Built | the captive portal, the always-on config form, mDNS, and the Network screen |
 | ✅ Built | the Configure page — a QR that joins the setup AP, closing it on the way out |
+| ✅ Built | the form trimmed to network + identity; thresholds in tenths, hold-to-repeat, debounced writes |
 | ⬜️ Not started | alerts (the state machine's wiring and visuals), power |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
@@ -682,6 +736,7 @@ state machine and M9's RTC-memory mirror an obvious place to attach.
   to go back to once the alarms are proven.
 - **Time zone.** The displayed clock renders in a compile-time POSIX zone string in
   [`ui_chrome.cpp`](components/ui/ui_chrome.cpp) — currently espressopost's, since
-  the two share a bench. It belongs in `settings` and on the config form, which now
-  exists and could carry it; until then relocating a post is a one-string change. Nothing stored is
-  affected either way: every record carries UTC.
+  the two share a bench. It belongs in `settings`, delivered the way every other
+  tunable will be once config rides the upload response; until then relocating a post
+  is a one-string change. Nothing stored is affected either way: every record carries
+  UTC.
