@@ -12,3 +12,9 @@ dependencies:
 
   ## LittleFS VFS layer — the temperature log lives on the `storage` partition.
   joltwallet/littlefs: "^1.16.4"
+
+  ## ES8311 codec driver + the volume/gain abstraction over it. Hand-rolling the
+  ## ES8311's ~20-register power-up sequence is the one part of the audio path
+  ## with no feedback loop short of "is the speaker silent", so it goes to the
+  ## driver Espressif maintains.
+  espressif/esp_codec_dev: "^1.3.1"

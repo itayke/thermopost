@@ -12,6 +12,7 @@ idf_component_register(
         "../../main"    # board_pins.hpp, for the panel resolution the layout derives from
     PRIV_REQUIRES
         alert           # thresholds, for the band lines and the readout tint
+        audio           # the Sound page's alarm test
         display         # the LVGL lock and the display handle
         recorder        # the graph's history ring
         sensor          # the live reading

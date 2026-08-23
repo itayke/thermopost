@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "audio.hpp"
 #include "settings.hpp"
 #include "ui_chrome.hpp"
 #include "ui_nav.hpp"
@@ -392,18 +393,54 @@ void build(lv_obj_t* scr) {
 }  // namespace recording
 
 // ===========================================================================
-// Sound — the master mute and the volume the alarm tone will use (M7).
+// Sound — the master mute, the alarm volume, and a button to hear both.
 // ===========================================================================
 namespace sound {
 
 PageChrome   s_page = {};
 lv_obj_t*    s_toggle = nullptr;
+lv_obj_t*    s_test = nullptr;
 StepperState s_volume = {};
 
 constexpr const char* kOn  = "On";
 constexpr const char* kOff = "Off";
 constexpr const char* kSilentWarning = "alarms will be silent";
-constexpr const char* kAudibleNote   = "the alarm tone arrives with the alerts";
+constexpr const char* kAudibleNote   = "tap Test for a two-second alarm";
+constexpr const char* kNoCodec       = "no codec found — alarms will be visual only";
+
+// --- The test button --------------------------------------------------------
+// Two seconds is long enough to hear the beep pattern repeat and judge whether the
+// volume carries across the room, and short enough that nobody reaches for the
+// power switch. It lives here rather than in `audio` because it is a property of
+// this button, not of the tone — M7's real alarm runs until the reading recovers.
+constexpr uint32_t kTestToneMs = 2000;
+constexpr int32_t  kTestW = 160;
+constexpr int32_t  kTestH = kToggleH;
+// The tone runs on its own task, so the button cannot know it has finished; it
+// asks, at a rate a finger cannot outrun.
+constexpr uint32_t kTestPollMs = 200;
+constexpr const char* kTestIdle = "Test alarm";
+constexpr const char* kTestStop = "Stop";
+
+static_assert(kRow2Y + kFont14H + kCaptionGap + kTestH <= kFooterY,
+              "the test button runs into the footer");
+
+void refresh_test_label() {
+  lv_label_set_text(pill_label(s_test), audio::playing() ? kTestStop : kTestIdle);
+}
+
+// Greyed and unclickable rather than hidden, so the reason it cannot be used stays
+// on screen next to it — the footer says which of the two reasons applies.
+void set_test_enabled(bool on) {
+  const lv_color_t tint = on ? kColorText : kColorMuted;
+  lv_obj_set_style_border_color(s_test, tint, LV_PART_MAIN);
+  lv_obj_set_style_text_color(s_test, tint, LV_PART_MAIN);
+  if (on) {
+    lv_obj_add_flag(s_test, LV_OBJ_FLAG_CLICKABLE);
+  } else {
+    lv_obj_remove_flag(s_test, LV_OBJ_FLAG_CLICKABLE);
+  }
+}
 
 void refresh_state() {
   const settings::Settings s = settings::get();
@@ -414,12 +451,41 @@ void refresh_state() {
   const lv_color_t tint = s.sound_enabled ? kColorText : kColorFault;
   lv_obj_set_style_border_color(s_toggle, tint, LV_PART_MAIN);
   lv_obj_set_style_text_color(s_toggle, tint, LV_PART_MAIN);
-  lv_label_set_text(s_page.footer, s.sound_enabled ? kAudibleNote : kSilentWarning);
+
+  // The test follows the mute rather than overriding it. It exists to prove what
+  // the alarm will do, and while the alarm is muted the truthful demonstration is
+  // silence — a button that beeps anyway would be testing something the device
+  // will never actually do.
+  const bool have_codec = audio::available();
+  set_test_enabled(have_codec && s.sound_enabled);
+  refresh_test_label();
+
+  lv_label_set_text(s_page.footer, !have_codec      ? kNoCodec
+                                   : s.sound_enabled ? kAudibleNote
+                                                     : kSilentWarning);
 }
 
 void on_toggle(lv_event_t*) {
   settings::set_sound_enabled(!settings::get().sound_enabled);
   refresh_state();
+}
+
+// A second tap stops the tone rather than queueing another two seconds, which is
+// the one thing anyone wants from a button that has just started making a noise.
+void on_test(lv_event_t*) {
+  if (audio::playing()) {
+    audio::stop();
+  } else {
+    audio::play(kTestToneMs, settings::get().volume_pct);
+  }
+  refresh_test_label();
+}
+
+// Only the label, and only while the page is up: the tone ends on its own task, so
+// this is how "Stop" turns back into "Test alarm".
+void tick(lv_timer_t*) {
+  if (!nav::visible(nav::Screen::Sound)) return;
+  refresh_test_label();
 }
 
 void on_volume_change() {
@@ -455,7 +521,13 @@ void build(lv_obj_t* scr) {
                                  &s_volume, &cap);
   fade[n++] = cap;
 
+  s_test = build_pill(s_page.group, kTestIdle, kTestW, kTestH, kColorText,
+                      &lv_font_montserrat_24, on_test, nullptr);
+  place(s_test, kColMidCx, kTestW, kRow2Y + kFont14H + kCaptionGap);
+  fade[n++] = s_test;
+
   load();
+  lv_timer_create(tick, kTestPollMs, nullptr);
   nav::register_screen(nav::Screen::Sound, s_page.group, fade, n, load);
 }
 

@@ -19,6 +19,7 @@ idf_component_register(
         spi_flash       # esp_flash_get_size
         esp_timer
         nvs_flash
+        audio
         board_i2c
         display
         recorder

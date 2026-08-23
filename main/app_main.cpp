@@ -12,8 +12,8 @@
 //
 // Boot order, each step logging and continuing where it can:
 //
-//   display → nvs → storage → settings → i2c → sensor → touch → recorder → ui
-//                                                            → (alert → cloud → power)
+//   display → nvs → storage → settings → i2c → sensor → touch → audio → recorder → ui
+//                                                                     → (alert → cloud → power)
 //
 // Display comes first so a failure downstream still has somewhere to be shown.
 // `recorder` precedes `ui` because the graph is drawn from the ring that
@@ -23,6 +23,7 @@
 #include "board_i2c.hpp"
 #include "bringup_probe.hpp"
 
+#include "audio.hpp"
 #include "display.hpp"
 #include "recorder.hpp"
 #include "sensor.hpp"
@@ -85,6 +86,10 @@ extern "C" void app_main(void) {
   // and the sampler keeps rescanning in case the flying lead is reseated.
   step("sensor", sensor::init());
   step("touch", touch::init());
+  // Non-fatal for the same reason the sensor is: an alarm that can only be seen
+  // is still an alarm, and a board with no codec should boot to a screen that
+  // says so rather than not boot.
+  step("audio", audio::init());
   step("recorder", recorder::init());
   step("ui", ui::init());
 

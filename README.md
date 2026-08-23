@@ -111,8 +111,8 @@ sensor → touch → recorder → ui` and draws the main screen:
  14:32                           ↓ 59.0
  ┌────────────────────────────────────┐
  │- - - - - - - - - - - - - - - - - - │   max, dashed
- │        ╭─╮      ╭──╮               │
- │   ╱  ╱   ╲____╱    ╲___╱╲___       │
+ │       ╭─╮      ╭──╮                │
+ │   ___╱   ╲____╱    ╲___╱╲___       │
  │- - - - - - - - - - - - - - - - - - │   min, dashed
  └────────────────────────────────────┘
   -2h            -1h             now
@@ -256,7 +256,7 @@ the time and the total record count.
 |---|---|---|
 | Thresholds | alarm below, alarm above, recovery margin | the exact stored hundredths |
 | Recording | interval, points plotted | the time span the graph covers |
-| Sound | alarm sound on/off, volume | whether alarms will be audible |
+| Sound | alarm sound on/off, volume, **test alarm** | whether alarms will be audible |
 | Display | temperature unit | that tapping the reading does this too |
 
 Every value is edited with espressopost's stepper — a caption, and `(-) value (+)`
@@ -290,6 +290,18 @@ Two consequences of stepping in whole degrees, both deliberate:
 The interval stepper walks a table — 10 s, 15 s, 30 s, 1 m, 2 m, 5 m, 10 m, 15 m,
 30 m, 1 h — instead of counting seconds. Ten taps covers the whole range; any fixed
 step over 10…3600 s is either hundreds of taps or too coarse to reach the fast end.
+
+The Sound page also carries a **Test alarm** button: two seconds of the real tone at
+the real volume, so the speaker can be judged without waiting for a threshold to be
+crossed. It is the same code path M7's alarm will use, which is the point — a test
+that exercises a second implementation proves nothing about the first. A second tap
+stops it rather than queueing another two seconds.
+
+It is greyed and unclickable in exactly two cases, and the footer says which: when
+the master mute is off, and when no codec answered at boot. The mute case is
+deliberate — the button exists to demonstrate what the alarm will do, and while
+alarms are muted the truthful demonstration is silence. A button that beeped anyway
+would be testing something the device never actually does.
 
 Screens cross-fade rather than cut, using espressopost's two-phase engine: fade the
 outgoing widgets out, swap in one frame at the midpoint, fade the incoming ones in.
@@ -386,6 +398,7 @@ the code is. Push the IDF dependency into the `alert.cpp` wrapper instead.
 ├── main/                   boot sequencer, board_pins, opt-in bring-up probe
 ├── components/
 │   ├── board_i2c/          the one shared I²C bus (touch + codec + sensor)
+│   ├── audio/              ES8311 + I²S alarm tone (the only thing that makes noise)
 │   ├── display/            ILI9341 over SPI + LVGL + LEDC backlight
 │   ├── sensor/             MCP9808 driver + 1 Hz sampling task
 │   ├── touch/              FT6336 capacitive touch as an LVGL indev
@@ -441,7 +454,8 @@ returns.
 | ✅ Built | `touch` — FT6336 via the FT5x06 driver, registered as an LVGL pointer indev |
 | ✅ Built | `recorder` + `ui` — one record per interval, graph backfilled from the log on boot, main screen with readout / chart / status strip |
 | ✅ Built | menu hub + four settings pages, ported stepper with coupled bounds, cross-fade between screens |
-| ⬜️ Not started | alerts, cloud + config service, power |
+| ✅ Built | `audio` — ES8311 over I²S, beeping alarm tone, driven from the Sound page's test button |
+| ⬜️ Not started | alerts (the state machine's wiring and visuals), cloud + config service, power |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
 power. Each step ends at something flashable and observable. (Sensor jumped
@@ -467,9 +481,16 @@ state machine and M9's RTC-memory mirror an obvious place to attach.
   intermediate duty cycles may not actually dim — in which case
   `set_brightness()` collapses to on/off and the power model loses its "dim"
   tier. Settles the first time the idle policy steps it down.
-- **The ES8311 tone.** Driving a codec over I²S to produce a simple alert beep is
-  the least certain part of the build. It is kept behind a two-function API so a
-  failure degrades to visual-only alerts rather than blocking anything else.
+- **The ES8311 tone.** Built ahead of the rest of M7 so the Sound page's test
+  button has something to play — driving a codec over I²S for a simple beep was
+  always the least certain part of the build, and a button that makes the noise on
+  demand is what makes it debuggable at all. It is behind a four-function API
+  (`init` / `available` / `play` / `stop`), so a board where the codec never answers
+  degrades to visual-only alerts instead of blocking anything else: `init()` returns
+  `ESP_ERR_NOT_FOUND`, boot carries on, and the Sound page says so. **Unheard on
+  hardware so far.** The uncertain parts are the ES8311's clock setup (16 kHz, MCLK
+  at 256×) and whether the FM8002E's enable line is where the pin map says it is —
+  both audible in one tap.
 - **Default alarm band.** Currently **20–25 °C**, deliberately tight around room
   temperature so both directions are reachable on a desk — cup the sensor to breach
   the maximum, a cold drink or canned air to breach the minimum. That makes the
