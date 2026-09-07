@@ -35,10 +35,9 @@ struct Entry {
 };
 
 constexpr Entry kEntries[] = {
-    {"Thresholds",  nav::Screen::Thresholds},
+    {"Temperature", nav::Screen::Temperature},
     {"Recording",   nav::Screen::Recording},
     {"Sound",       nav::Screen::Sound},
-    {"Display",     nav::Screen::Display},
     {"Network",     nav::Screen::Network},
 };
 constexpr int kEntryCount = static_cast<int>(sizeof(kEntries) / sizeof(kEntries[0]));
@@ -105,11 +104,13 @@ constexpr int32_t kGridH = grid_height(kGridRows);
 constexpr int32_t kGridY = kGridTop + (kFooterY - kGridTop - kGridH) / 2;
 static_assert(kGridY >= kGridTop, "the entry grid does not fit between the hint and the footer");
 
-// Network took the grid to three rows, which this had already checked before the
-// page existed — so it cost a row in kEntries[] and nothing else. An About page would
-// fill the gap beside it at the same price. Checking a taller grid than is built is
-// what keeps the squeeze from being discovered while writing a screen, which is where
-// a hint line quietly gets deleted to make room.
+// Deliberately a row taller than the four entries currently need. Network once took
+// the grid to three rows and cost nothing but a row in kEntries[], because this had
+// already checked the space before the page existed; folding the unit into
+// Temperature handed that row back. Either way an About page fits at the same price.
+// Checking a taller grid than is built is what keeps the squeeze from being
+// discovered while writing a screen, which is where a hint line quietly gets deleted
+// to make room.
 constexpr int32_t kGridRowsPlanned = 3;
 static_assert(kGridTop + grid_height(kGridRowsPlanned) <= kFooterY,
               "a third row of entries would not fit under the hint");

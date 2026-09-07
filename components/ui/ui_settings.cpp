@@ -163,16 +163,33 @@ void format_span(char* out, size_t n, uint32_t seconds) {
 }
 
 // ===========================================================================
-// Thresholds — the alarm band and its recovery margin.
+// Temperature — the alarm band, its recovery margin, and the unit all three are
+// read in.
+//
+// The unit used to be a page of its own, and moving it here is not just tidying:
+// it is the only control on the device whose effect is entirely on the three
+// numbers beside it. On a page by itself a tap changed a suffix and nothing
+// visibly followed; here the same tap re-renders the band it governs, which is
+// what the setting actually does. It also puts the choice next to the values at
+// the moment someone is deciding what to type into them.
 // ===========================================================================
-namespace thresholds {
+namespace temperature {
 
 PageChrome    s_page = {};
 StepperState  s_min = {};
 StepperState  s_max = {};
 StepperState  s_hyst = {};
+lv_obj_t*     s_unit = nullptr;
 
 lv_timer_t* s_persist = nullptr;
+
+// The main screen's readout toggles the unit too. That shortcut is invisible until
+// someone is told, and the moment they have just used the slow path is exactly when
+// it is worth saying — so the footer says it for a beat after a toggle and then goes
+// back to the stored values, which is what the line is for the rest of the time.
+constexpr const char* kTapHint = "tapping the reading does this too";
+constexpr uint32_t kTapHintMs = 2500;
+lv_timer_t* s_hint = nullptr;
 
 // While the page is open the three steppers are the working copy, and NVS is
 // written from them once the taps stop. Everything below therefore derives from
@@ -238,12 +255,31 @@ void flush_persist() {
 // set in Fahrenheit is not a round number of Celsius, and this is where that shows
 // rather than looking like drift somewhere else.
 void refresh_footer() {
+  // Any hint still showing is stale the moment a value moves, and cancelling it here
+  // rather than letting it expire keeps the timer from overwriting a fresher line.
+  if (s_hint != nullptr) {
+    lv_timer_delete(s_hint);
+    s_hint = nullptr;
+  }
   char text[kTextMax];
   std::snprintf(text, sizeof(text), "stored %.2f to %.2f C, clears by %.2f",
                 static_cast<double>(settings::c100_to_c(min_c100())),
                 static_cast<double>(settings::c100_to_c(max_c100())),
                 static_cast<double>(settings::c100_to_c(hyst_c100())));
   lv_label_set_text(s_page.footer, text);
+}
+
+void on_hint_done(lv_timer_t*) {
+  s_hint = nullptr;  // one-shot: LVGL deletes it after this returns
+  refresh_footer();
+}
+
+// Say something for a beat, then fall back to the stored line.
+void show_hint(const char* text) {
+  refresh_footer();  // cancels any hint already running
+  lv_label_set_text(s_page.footer, text);
+  s_hint = lv_timer_create(on_hint_done, kTapHintMs, nullptr);
+  lv_timer_set_repeat_count(s_hint, 1);
 }
 
 // Re-derive every bound from the steppers. Called on show and after each tap, so
@@ -306,11 +342,32 @@ void load() {
   s_max.value  = settings::display_tenths(s.max_c100);
   s_hyst.value = settings::display_span_tenths(s.hysteresis_c100);
 
+  lv_label_set_text(pill_label(s_unit), suffix);
+
   rebound();
   stepper_refresh(&s_min);
   stepper_refresh(&s_max);
   stepper_refresh(&s_hyst);
   refresh_footer();
+}
+
+// Switching the unit re-reads all three steppers, because tenths of a degree mean
+// different amounts in each and the stored hundredths are what survives.
+//
+// The flush has to come *first*, and that ordering is the whole subtlety here. The
+// steppers hold tenths in whatever unit was on screen when they were painted, and
+// write_through() reads them back through c100_from_tenths(), which asks settings
+// what the current unit is. Setting the unit before the pending write lands would
+// reinterpret 21.5 °C as 21.5 °F and store a band nobody asked for — a silent
+// 11-degree move, on a debounce window nobody can see.
+void on_unit_toggle(lv_event_t*) {
+  flush_persist();
+  const settings::TempUnit next = settings::get().unit == settings::TempUnit::Celsius
+                                      ? settings::TempUnit::Fahrenheit
+                                      : settings::TempUnit::Celsius;
+  settings::set_unit(next);
+  load();
+  show_hint(kTapHint);
 }
 
 // Leaving inside the debounce window would otherwise drop the last edit.
@@ -320,7 +377,7 @@ void on_back(lv_event_t*) {
 }
 
 void build(lv_obj_t* scr) {
-  build_page_chrome(scr, "Thresholds", &s_page, on_back);
+  build_page_chrome(scr, "Temperature", &s_page, on_back);
 
   // A tenth per tap, a tenth per repeat, and ten times that once a hold has run
   // past kHoldFastAfter — see ui_stepper.cpp. Taps alone would be 1650 of them
@@ -346,15 +403,23 @@ void build(lv_obj_t* scr) {
   fade[n++] = build_stepper_cell(s_page.group, kColRightCx, kRow1Y, "Alarm above",
                                  &s_max, &cap, kTempStepperCfg);
   fade[n++] = cap;
-  fade[n++] = build_stepper_cell(s_page.group, kColMidCx, kRow2Y, "Recovery margin",
+  // Row 2 is a pair now rather than one centred cell: the margin keeps the left
+  // column under the minimum it belongs to, and the unit takes the right. Both are
+  // geometry the shared asserts above already cover — a toggle beside a stepper is
+  // what the Sound page does, and kPillBandDy is what puts them on one centreline.
+  fade[n++] = build_stepper_cell(s_page.group, kColLeftCx, kRow2Y, "Recovery margin",
                                  &s_hyst, &cap, kTempStepperCfg);
+  fade[n++] = cap;
+  s_unit = build_toggle_cell(s_page.group, kColRightCx, kRow2Y, "Unit", on_unit_toggle,
+                             &cap);
+  fade[n++] = s_unit;
   fade[n++] = cap;
 
   load();
-  nav::register_screen(nav::Screen::Thresholds, s_page.group, fade, n, load);
+  nav::register_screen(nav::Screen::Temperature, s_page.group, fade, n, load);
 }
 
-}  // namespace thresholds
+}  // namespace temperature
 
 // ===========================================================================
 // Recording — how often a record is written, and how many are plotted.
@@ -591,61 +656,12 @@ void build(lv_obj_t* scr) {
 
 }  // namespace sound
 
-// ===========================================================================
-// Display — the unit, and deliberately sparse. M9's backlight and idle timings
-// land here, which is why it is a page of its own rather than a row elsewhere.
-// ===========================================================================
-namespace display_page {
-
-PageChrome s_page = {};
-lv_obj_t*  s_toggle = nullptr;
-
-// The readout on the main screen toggles the unit too. A menu entry is how anyone
-// finds that out, so the footer says it rather than leaving the shortcut hidden.
-constexpr const char* kTapHint = "tapping the reading does this too";
-
-void refresh_state() {
-  lv_label_set_text(pill_label(s_toggle), settings::unit_suffix());
-  lv_label_set_text(s_page.footer, kTapHint);
-}
-
-void on_toggle(lv_event_t*) {
-  const settings::TempUnit next = settings::get().unit == settings::TempUnit::Celsius
-                                      ? settings::TempUnit::Fahrenheit
-                                      : settings::TempUnit::Celsius;
-  settings::set_unit(next);
-  refresh_state();
-}
-
-void load() { refresh_state(); }
-
-void build(lv_obj_t* scr) {
-  build_page_chrome(scr, "Display", &s_page);
-
-  lv_obj_t* fade[nav::kMaxFadeWidgets];
-  int n = 0;
-  fade[n++] = s_page.back.btn;
-  fade[n++] = s_page.heading;
-  fade[n++] = s_page.footer;
-  lv_obj_t* cap = nullptr;
-  s_toggle = build_toggle_cell(s_page.group, kColMidCx, kRow1Y, "Temperature unit",
-                               on_toggle, &cap);
-  fade[n++] = s_toggle;
-  fade[n++] = cap;
-
-  load();
-  nav::register_screen(nav::Screen::Display, s_page.group, fade, n, load);
-}
-
-}  // namespace display_page
-
 }  // namespace
 
 void build_all(lv_obj_t* scr) {
-  thresholds::build(scr);
+  temperature::build(scr);
   recording::build(scr);
   sound::build(scr);
-  display_page::build(scr);
 }
 
 }  // namespace thermopost::ui::settings_screen

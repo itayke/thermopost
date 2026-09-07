@@ -27,10 +27,9 @@ namespace thermopost::ui::nav {
 enum class Screen : uint8_t {
   Main = 0,
   Menu,
-  Thresholds,
+  Temperature,
   Recording,
   Sound,
-  Display,
   Network,
   Configure,
   kCount,

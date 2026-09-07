@@ -261,26 +261,24 @@ opposite corners, which is a stricter check than one dot ever was.
 Tapping *Menu* cross-fades to the hub. Its heading is **the post's name**, not the
 word "MENU" — in a rack of identical boxes, the useful thing to say at the top of a
 settings screen is which box this is, and the chevron in the corner already says
-what the screen is for. Under it sit five pages and a line carrying the full date,
-the time and the total record count. The grid is two columns wide, so the odd
-one out centres on a row of its own rather than sitting flush left with a hole
-beside it.
+what the screen is for. Under it sit four pages and a line carrying the full date,
+the time and the total record count. The grid is two columns wide; if an odd
+number of pages ever lands there, the last one centres on a row of its own
+rather than sitting flush left with a hole beside it.
 
 ```
  (‹ Back)          North Tank
         Rename from Network setup page
-   (   Thresholds   ) (    Recording   )
-   (      Sound     ) (     Display    )
-            (     Network    )
+   (  Temperature   ) (    Recording   )
+   (      Sound     ) (     Network    )
           Tue 28 Jul   14:32   4213 records
 ```
 
 | page | controls | footer says |
 |---|---|---|
-| Thresholds | alarm below, alarm above, recovery margin | the exact stored hundredths |
+| Temperature | alarm below, alarm above, recovery margin, **unit** | the exact stored hundredths |
 | Recording | interval, points plotted | the time span the graph covers |
 | Sound | alarm sound on/off, volume, **test alarm** | whether alarms will be audible |
-| Display | temperature unit | that tapping the reading does this too |
 | Network | Configure, Forget; link, address and sync status above | where the name and Sheet URL are edited |
 
 Every value is edited with espressopost's stepper — a caption, and `(-) value (+)`
@@ -328,6 +326,25 @@ The unit label sits on its own line under the number rather than after it, for a
 reason worth recording: the discs leave 66 px of clear space between them, `"21.5"`
 fits that at the title font and `"21.5°C"` does not — and moving the discs apart
 would push the control past the width the two-column layout asserts it can hold.
+
+**The °C/°F toggle lives on this page, beside the band it governs.** It used to be a
+Display page of its own, where a tap changed a suffix and nothing visibly followed;
+here the same tap re-renders all three thresholds, which is what the setting actually
+does. It also puts the choice next to the values at the moment someone is deciding
+what to type into them.
+
+That merge has one ordering constraint, and it is the kind that would have been a
+silent bug rather than a visible one. The steppers hold tenths in whatever unit was
+on screen when they were painted, and the debounced write reads them back by asking
+settings what the current unit is — so a pending write has to be flushed *before* the
+unit changes. Set the unit first and 21.5 °C is re-read as 21.5 °F, storing a band
+eleven degrees from the one on screen, inside a 400 ms window nobody can see. The
+toggle flushes, then switches, then reloads from the stored hundredths.
+
+Switching also spends the footer for a couple of seconds on "tapping the reading does
+this too" before falling back to the stored values. That shortcut was the old Display
+page's footer, and the moment someone has just used the slow path is the one moment
+it is worth saying.
 
 The interval stepper walks a table — 10 s, 15 s, 30 s, 1 m, 2 m, 5 m, 10 m, 15 m,
 30 m, 1 h — instead of counting seconds. Ten taps covers the whole range; any fixed
@@ -686,7 +703,7 @@ returns.
 | ✅ Verified | `board_i2c` + `sensor` — MCP9808 found by manufacturer ID, sampled at 1 Hz, shown on screen |
 | ✅ Built | `touch` — FT6336 via the FT5x06 driver, registered as an LVGL pointer indev |
 | ✅ Built | `recorder` + `ui` — one record per interval, graph backfilled from the log on boot, main screen with readout / chart / status strip |
-| ✅ Built | menu hub + four settings pages, ported stepper with coupled bounds, cross-fade between screens |
+| ✅ Built | menu hub + three settings pages, ported stepper with coupled bounds, cross-fade between screens |
 | ✅ Verified | `audio` — ES8311 over I²S, beeping alarm tone out of the speaker, driven from the Sound page's test button |
 | ✅ Built | `cloud` + `shell` — Wi-Fi with unbounded backoff, SNTP clock, `cloud` serial command |
 | ✅ Built | the upload queue — batched POSTs to Apps Script, NVS high-water mark, host-tested JSON |
