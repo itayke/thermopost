@@ -676,7 +676,7 @@ returns.
 
 ## Status
 
-**Bring-up passed. Drivers next.**
+**Everything through the cloud milestone is built. Alerts and power are what's left.**
 
 | | |
 |---|---|
