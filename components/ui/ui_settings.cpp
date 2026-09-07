@@ -6,6 +6,7 @@
 #include <cstdlib>
 
 #include "audio.hpp"
+#include "power.hpp"
 #include "settings.hpp"
 #include "ui_chrome.hpp"
 #include "ui_nav.hpp"
@@ -107,6 +108,10 @@ static_assert(kIntervalChoicesS[kIntervalChoiceCount - 1] <= settings::kInterval
 
 constexpr uint16_t kGraphPointsStep = 30;
 constexpr uint8_t  kVolumeStepPct   = 5;
+
+// The battery readout is the one value on any page that moves without being
+// touched, so the Power page repolls it while it is open.
+constexpr uint32_t kBatteryPollMs = 2000;
 
 constexpr uint32_t kSecPerMin  = 60;
 constexpr uint32_t kSecPerHour = 3600;
@@ -658,10 +663,310 @@ void build(lv_obj_t* scr) {
 
 }  // namespace
 
+
+// ===========================================================================
+// Power — what the post is allowed to do when nobody is looking at it.
+//
+// Three modes and one number, because the interesting question is not how long
+// to wait but who decides whether waiting is allowed at all. The middle mode is
+// the default and infers that from the pack voltage; the other two exist because
+// the inference can be wrong and an operator standing in front of the post is a
+// better judge than a threshold.
+// ===========================================================================
+namespace power_page {
+
+PageChrome   s_page = {};
+lv_obj_t*    s_mode = nullptr;
+lv_obj_t*    s_off = nullptr;
+lv_obj_t*    s_pct = nullptr;
+lv_obj_t*    s_volts = nullptr;
+StepperState s_sleep = {};
+
+void load();
+
+// Row 1 carries two pills, so the mode's label had to get shorter than the mode's
+// name. The footer says what each one actually does, which is where the sentence
+// belongs anyway — a capsule is a value, not an explanation.
+constexpr int32_t kOffW  = 104;
+constexpr int32_t kModeW = 150;
+constexpr int32_t kRowH  = kToggleH;
+// Derived exactly as every other pair on every other page: two hit areas that meet
+// in the gap belong to whichever was built last, and here that would be Turn Off
+// swallowing taps meant for the mode beside it.
+constexpr int32_t kRow1ExtClick = ext_click_for(kOffW, kRowH);
+constexpr int32_t kRow1Seam = 2;
+constexpr int32_t kRow1Gap = 2 * kRow1ExtClick + kRow1Seam;
+constexpr int32_t kRow1W = kOffW + kRow1Gap + kModeW;
+constexpr int32_t kRow1X = (kScreenW - kRow1W) / 2;
+static_assert(kRow1X >= kEdgePad, "the two row-one pills overhang the screen");
+constexpr int32_t kOffX  = kRow1X;
+constexpr int32_t kModeX = kRow1X + kOffW + kRow1Gap;
+constexpr int32_t kRow1PillY = kRow1Y + kFontBodyH + kCaptionGap + kPillBandDy;
+
+// A caption may be wider than the pill it labels, and here it has to be: at
+// Montserrat 14 the hint is wider than a 104 px capsule, and a boxed label that
+// overflows *wraps*, which puts a second line where the layout budgeted one and
+// clips it. Each caption is allowed the pill's width plus its share of the gutter,
+// leaving kRow1Seam between the two. They also ellipsise rather than wrap, so a
+// longer wording later degrades to one shortened line instead of reintroducing
+// this.
+constexpr int32_t kRow1CapPad = (kRow1Gap - kRow1Seam) / 2;
+constexpr int32_t kOffCapW  = kOffW + 2 * kRow1CapPad;
+constexpr int32_t kModeCapW = kModeW + 2 * kRow1CapPad;
+constexpr int32_t kOffCapX  = kOffX - kRow1CapPad;
+constexpr int32_t kModeCapX = kModeX - kRow1CapPad;
+static_assert(kOffCapX >= kEdgePad, "the Turn Off caption overhangs the screen edge");
+static_assert(kOffCapX + kOffCapW + kRow1Seam <= kModeCapX,
+              "the two row-one captions meet");
+
+// The mode footers run to a second line, and the shared kFooterY budgets exactly
+// one — a wrapped line there renders below the panel and is simply lost. This page
+// has the room to start a line higher: row 2's controls end precisely where this
+// begins.
+constexpr int32_t kFooterLines = 2;
+constexpr int32_t kPowerFooterY = kFooterY - kFontBodyH;
+static_assert(kPowerFooterY >= kRow2Y + kFontBodyH + kCaptionGap + stepper_height(kStepperCfg),
+              "the two-line footer overlaps the sleep stepper's click area");
+static_assert(kPowerFooterY + kFooterLines * kFontBodyH <= kScreenH - kEdgePad,
+              "the two-line footer overflows the panel");
+
+constexpr const char* kModeAlwaysOn    = "Always on";
+constexpr const char* kModeConnected   = "On USB power";
+constexpr const char* kModeAlwaysSleep = "Always sleep";
+constexpr const char* kModeHint = "tap to cycle";
+
+// Two taps, because one stray tap would otherwise blank the device until a charger
+// turns up. The same shape as the Sound page's Test button: the label is the state,
+// so nothing has to be explained beside it.
+constexpr const char* kOffIdle    = "Turn Off";
+constexpr const char* kOffConfirm = "Sure?";
+constexpr const char* kOffHint    = "touch to wake";
+constexpr uint32_t kOffConfirmMs = 4000;
+lv_timer_t* s_off_timer = nullptr;
+
+// Sensible sleep delays rather than a fixed step, the same trick the interval
+// stepper uses: twelve taps covers ten seconds to an hour, and any fixed step
+// over that range is either dozens of taps or too coarse at the fast end.
+constexpr uint16_t kSleepChoicesS[] = {10, 15, 20, 30, 45, 60, 90, 120, 300, 600, 1800, 3600};
+constexpr int16_t kSleepChoiceCount =
+    static_cast<int16_t>(sizeof(kSleepChoicesS) / sizeof(kSleepChoicesS[0]));
+static_assert(kSleepChoicesS[0] >= settings::kSleepAfterMinS,
+              "the shortest offered sleep delay is below what settings accepts");
+static_assert(kSleepChoicesS[kSleepChoiceCount - 1] <= settings::kSleepAfterMaxS,
+              "the longest offered sleep delay is above what settings accepts");
+
+constexpr const char* kNoBattery = "--";
+constexpr const char* kNoPack    = "no pack";
+constexpr const char* kFooterNeverSleeps  = "stays awake; the screen still dims and blanks";
+constexpr const char* kFooterOnBattery    = "sleeps after %s on battery, never on USB";
+constexpr const char* kFooterAlwaysSleeps = "sleeps after %s, on any supply";
+// The one thing this page must not be coy about. Two of the three modes are mostly
+// promises until deep sleep is armed, and a settings page that let them look
+// finished would be the page lying about the device.
+constexpr const char* kFooterNotArmed = "deep sleep not wired yet — dims and blanks only";
+constexpr const char* kFooterOffConfirm = "tap again to switch off; a touch wakes it";
+
+int16_t sleep_index_for(uint16_t seconds) {
+  for (int16_t i = 0; i < kSleepChoiceCount; ++i) {
+    if (kSleepChoicesS[i] >= seconds) return i;
+  }
+  return kSleepChoiceCount - 1;
+}
+
+void format_sleep(char* out, size_t n, int16_t index) {
+  if (index < 0 || index >= kSleepChoiceCount) return;
+  format_span(out, n, kSleepChoicesS[index]);
+}
+
+const char* mode_label(settings::PowerMode m) {
+  switch (m) {
+    case settings::PowerMode::AlwaysOn:    return kModeAlwaysOn;
+    case settings::PowerMode::AlwaysSleep: return kModeAlwaysSleep;
+    default:                               return kModeConnected;
+  }
+}
+
+void refresh_footer() {
+  const settings::Settings s = settings::get();
+  if (s.power_mode == settings::PowerMode::AlwaysOn) {
+    lv_label_set_text(s_page.footer, kFooterNeverSleeps);
+    return;
+  }
+  if (!power::deep_sleep_armed()) {
+    lv_label_set_text(s_page.footer, kFooterNotArmed);
+    return;
+  }
+  char span[kSpanTextMax];
+  format_span(span, sizeof(span), s.sleep_after_s);
+  char note[kTextMax];
+  std::snprintf(note, sizeof(note),
+                s.power_mode == settings::PowerMode::AlwaysSleep ? kFooterAlwaysSleeps
+                                                                 : kFooterOnBattery,
+                span);
+  lv_label_set_text(s_page.footer, note);
+}
+
+// The number and the voltage it was derived from, one above the other. Both,
+// deliberately: the percentage is an estimate off a published lithium curve and
+// the volts are the measurement, and showing only the friendly one would hide
+// which of the two can be trusted.
+void refresh_battery() {
+  const power::Battery b = power::battery();
+  if (!b.present || !b.calibrated) {
+    lv_label_set_text(s_pct, kNoBattery);
+    lv_label_set_text(s_volts, kNoPack);
+    lv_obj_set_style_text_color(s_pct, kColorMuted, LV_PART_MAIN);
+    return;
+  }
+  char text[kTextMax];
+  std::snprintf(text, sizeof(text), "%d%%%s", b.pct,
+                power::on_external_power() ? " " LV_SYMBOL_CHARGE : "");
+  lv_label_set_text(s_pct, text);
+  lv_obj_set_style_text_color(s_pct, b.pct < 25 ? kColorFault : kColorText, LV_PART_MAIN);
+
+  std::snprintf(text, sizeof(text), "%d.%02d V est.", b.pack_mv / 1000,
+                (b.pack_mv % 1000) / 10);
+  lv_label_set_text(s_volts, text);
+}
+
+void reset_off_button() {
+  if (s_off_timer != nullptr) {
+    lv_timer_delete(s_off_timer);
+    s_off_timer = nullptr;
+  }
+  lv_label_set_text(pill_label(s_off), kOffIdle);
+  pill_set_color(s_off, kColorText);
+  refresh_footer();
+}
+
+void on_off_timeout(lv_timer_t*) {
+  s_off_timer = nullptr;
+  reset_off_button();
+}
+
+void on_off_tap(lv_event_t*) {
+  if (s_off_timer != nullptr) {
+    // Armed, so this is the second tap. Never returns.
+    power::turn_off();
+  }
+  lv_label_set_text(pill_label(s_off), kOffConfirm);
+  pill_set_color(s_off, kColorFault);
+  lv_label_set_text(s_page.footer, kFooterOffConfirm);
+  s_off_timer = lv_timer_create(on_off_timeout, kOffConfirmMs, nullptr);
+  lv_timer_set_repeat_count(s_off_timer, 1);
+}
+
+void on_mode_tap(lv_event_t*) {
+  const settings::PowerMode cur = settings::get().power_mode;
+  const settings::PowerMode next =
+      cur == settings::PowerMode::AlwaysSleep
+          ? settings::PowerMode::AlwaysOn
+          : static_cast<settings::PowerMode>(static_cast<uint8_t>(cur) + 1);
+  settings::set_power_mode(next);
+  // Straight back to the top of the ladder: a mode changed from a dimming screen
+  // should not leave the screen dimming while the reader checks what it did.
+  power::wake();
+  load();
+}
+
+void on_sleep_change() {
+  settings::set_sleep_after_s(kSleepChoicesS[s_sleep.value]);
+  refresh_footer();
+}
+
+void tick(lv_timer_t*) {
+  if (!nav::visible(nav::Screen::Power)) return;
+  refresh_battery();
+}
+
+void load() {
+  const settings::Settings s = settings::get();
+  lv_label_set_text(pill_label(s_mode), mode_label(s.power_mode));
+  s_sleep.value = sleep_index_for(s.sleep_after_s);
+  stepper_refresh(&s_sleep);
+  refresh_battery();
+  // Also cancels a half-armed Turn Off, so leaving the page and coming back can
+  // never land on a screen where one tap switches the post off.
+  reset_off_button();
+}
+
+void build(lv_obj_t* scr) {
+  build_page_chrome(scr, "Power", &s_page);
+
+  // This page's footer says what a mode actually does, which is a sentence rather
+  // than a phrase. Lifted a line so the wrap has somewhere to go.
+  lv_obj_set_pos(s_page.footer, kEdgePad, kPowerFooterY);
+
+  s_sleep.min = 0;
+  s_sleep.max = kSleepChoiceCount - 1;
+  s_sleep.step = 1;
+  s_sleep.suffix = "";
+  s_sleep.format = format_sleep;
+  s_sleep.on_change = on_sleep_change;
+
+  lv_obj_t* fade[nav::kMaxFadeWidgets];
+  int n = 0;
+  fade[n++] = s_page.back.btn;
+  fade[n++] = s_page.heading;
+  fade[n++] = s_page.footer;
+
+  // --- row 1: Turn Off, then the mode
+  lv_obj_t* off_cap = make_boxed_label(s_page.group, kFontBody, kColorSubText, kOffCapW,
+                                       LV_TEXT_ALIGN_CENTER);
+  lv_label_set_long_mode(off_cap, LV_LABEL_LONG_MODE_DOTS);
+  lv_label_set_text(off_cap, kOffHint);
+  lv_obj_set_pos(off_cap, kOffCapX, kRow1Y);
+  fade[n++] = off_cap;
+  s_off = build_pill(s_page.group, kOffIdle, kOffW, kRowH, kColorText, kFontTitle,
+                     on_off_tap, nullptr);
+  lv_obj_set_pos(s_off, kOffX, kRow1PillY);
+  fade[n++] = s_off;
+
+  lv_obj_t* mode_cap = make_boxed_label(s_page.group, kFontBody, kColorSubText, kModeCapW,
+                                        LV_TEXT_ALIGN_CENTER);
+  lv_label_set_long_mode(mode_cap, LV_LABEL_LONG_MODE_DOTS);
+  lv_label_set_text(mode_cap, kModeHint);
+  lv_obj_set_pos(mode_cap, kModeCapX, kRow1Y);
+  fade[n++] = mode_cap;
+  s_mode = build_pill(s_page.group, mode_label(settings::kPowerModeDefault), kModeW,
+                      kRowH, kColorText, kFontTitle, on_mode_tap, nullptr);
+  lv_obj_set_pos(s_mode, kModeX, kRow1PillY);
+  fade[n++] = s_mode;
+
+  // --- row 2: the sleep delay, and a readout that is not a control
+  lv_obj_t* cap = nullptr;
+  fade[n++] = build_stepper_cell(s_page.group, kColLeftCx, kRow2Y, "Sleep after",
+                                 &s_sleep, &cap);
+  fade[n++] = cap;
+
+  // The only cell on any page that cannot be tapped. It is here because this is the
+  // page someone opens when they are thinking about the battery, and a number you
+  // need a serial console for is a number nobody looks at.
+  fade[n++] = build_caption(s_page.group, kColRightCx, kRow2Y, "Battery");
+  const int32_t readout_y = kRow2Y + kFontBodyH + kCaptionGap;
+  s_pct = make_boxed_label(s_page.group, kFontTitle, kColorText, kCellW,
+                           LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_pos(s_pct, kColRightCx - kCellW / 2, readout_y);
+  fade[n++] = s_pct;
+  s_volts = make_boxed_label(s_page.group, kFontBody, kColorMuted, kCellW,
+                             LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_pos(s_volts, kColRightCx - kCellW / 2, readout_y + kFontTitleH);
+  fade[n++] = s_volts;
+  static_assert(kRow2Y + kFontBodyH + kCaptionGap + kFontTitleH + kFontBodyH <= kFooterY,
+                "the battery readout's second line runs into the footer");
+
+  load();
+  lv_timer_create(tick, kBatteryPollMs, nullptr);
+  nav::register_screen(nav::Screen::Power, s_page.group, fade, n, load);
+}
+
+}  // namespace power_page
+
 void build_all(lv_obj_t* scr) {
   temperature::build(scr);
   recording::build(scr);
   sound::build(scr);
+  power_page::build(scr);
 }
 
 }  // namespace thermopost::ui::settings_screen

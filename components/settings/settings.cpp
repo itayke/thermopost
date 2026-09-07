@@ -24,6 +24,8 @@ constexpr const char* kKeyUnit     = "un";
 constexpr const char* kKeySound    = "sn";
 constexpr const char* kKeyVolume   = "vo";
 constexpr const char* kKeyName     = "nm";
+constexpr const char* kKeyPowerMode = "pm";
+constexpr const char* kKeySleepAfter = "sa";
 
 // Printable-ASCII bounds for the name. Space is allowed inside it, just not at
 // either end.
@@ -72,6 +74,8 @@ Settings s_cur = {
     .unit            = TempUnit::Fahrenheit,
     .sound_enabled   = true,
     .volume_pct      = kVolumeDefaultPct,
+    .power_mode      = kPowerModeDefault,
+    .sleep_after_s   = kSleepAfterDefaultS,
     .name            = "Post-0000",
 };
 
@@ -150,6 +154,7 @@ uint16_t clamp_interval(uint16_t v) { return std::clamp(v, kIntervalMinS, kInter
 uint16_t clamp_points(uint16_t v)   { return std::clamp(v, kGraphPointsMin, kGraphPointsMax); }
 int16_t  clamp_temp(int16_t v)      { return std::clamp(v, kTempFloorC100, kTempCeilC100); }
 uint8_t  clamp_volume(uint8_t v)    { return v > kVolumeMaxPct ? kVolumeMaxPct : v; }
+uint16_t clamp_sleep_after(uint16_t v) { return std::clamp(v, kSleepAfterMinS, kSleepAfterMaxS); }
 
 // Hysteresis is bounded here only against nonsense; alert::sanitize() applies
 // the real "must be able to recover" cap against the live band, because that
@@ -195,6 +200,16 @@ esp_err_t init() {
   if (nvs_get_u8(h, kKeyUnit, &u8) == ESP_OK && u8 <= 1) s_cur.unit = static_cast<TempUnit>(u8);
   if (nvs_get_u8(h, kKeySound, &u8) == ESP_OK) s_cur.sound_enabled = (u8 != 0);
   if (nvs_get_u8(h, kKeyVolume, &u8) == ESP_OK) s_cur.volume_pct = clamp_volume(u8);
+  // Range-checked rather than clamped: an unknown mode from a newer firmware has
+  // no nearest valid neighbour, and falling back to the default is the only
+  // reading of it that is not a guess about what the user meant.
+  if (nvs_get_u8(h, kKeyPowerMode, &u8) == ESP_OK &&
+      u8 <= static_cast<uint8_t>(PowerMode::AlwaysSleep)) {
+    s_cur.power_mode = static_cast<PowerMode>(u8);
+  }
+  if (nvs_get_u16(h, kKeySleepAfter, &u16) == ESP_OK) {
+    s_cur.sleep_after_s = clamp_sleep_after(u16);
+  }
 
   // Sanitized on the way out of NVS as well as in, so a value written by hand or
   // by a firmware with a wider limit can't reach the UI. A stored name longer
@@ -275,6 +290,20 @@ esp_err_t set_sound_enabled(bool on) {
   return persist<uint8_t>(kKeySound, on ? 1 : 0) ? ESP_OK : ESP_FAIL;
 }
 
+esp_err_t set_power_mode(PowerMode m) {
+  if (m > PowerMode::AlwaysSleep) m = kPowerModeDefault;
+  if (m == s_cur.power_mode) return ESP_OK;
+  s_cur.power_mode = m;
+  return persist<uint8_t>(kKeyPowerMode, static_cast<uint8_t>(m)) ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t set_sleep_after_s(uint16_t v) {
+  v = clamp_sleep_after(v);
+  if (v == s_cur.sleep_after_s) return ESP_OK;
+  s_cur.sleep_after_s = v;
+  return persist<uint16_t>(kKeySleepAfter, v) ? ESP_OK : ESP_FAIL;
+}
+
 esp_err_t set_volume_pct(uint8_t pct) {
   pct = clamp_volume(pct);
   if (pct == s_cur.volume_pct) return ESP_OK;
@@ -324,6 +353,8 @@ esp_err_t reset_to_defaults() {
       .unit            = TempUnit::Fahrenheit,
       .sound_enabled   = true,
       .volume_pct      = kVolumeDefaultPct,
+      .power_mode      = kPowerModeDefault,
+      .sleep_after_s   = kSleepAfterDefaultS,
       .name            = {},
   };
   std::snprintf(s_cur.name, sizeof(s_cur.name), "%s", keep_name);

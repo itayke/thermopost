@@ -82,6 +82,14 @@ void step(const char* name, esp_err_t err) {
 }  // namespace
 
 extern "C" void app_main(void) {
+  // Before everything, including the probe: a post switched off from the Power page
+  // wakes on the touch interrupt, and that pad is still held by the RTC domain
+  // until this hands it back — which has to happen before touch::init() tries to
+  // claim it as an ordinary GPIO.
+  if (power::resume_from_off()) {
+    ESP_LOGI(kTag, "woke from off");
+  }
+
 #if CONFIG_THERMOPOST_RUN_BRINGUP_PROBE
   bringup::run();
 #endif

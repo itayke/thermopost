@@ -9,12 +9,16 @@
 #include "freertos/task.h"
 
 #include "alert.hpp"
+#include "settings.hpp"
 #include "board_pins.hpp"
 #include "display.hpp"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_console.h"
+#include "driver/rtc_io.h"
+#include "esp_sleep.h"
+#include "esp_system.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "lvgl.h"
@@ -52,16 +56,92 @@ constexpr adc_atten_t   kAdcAtten   = ADC_ATTEN_DB_12;
 static_assert(board::kBatteryAdc == 9,
               "battery sense moved off GPIO9, so ADC1_CH8 above is no longer it");
 
-// The divider is NOT documented and has not been measured, so nothing here
-// converts a pin voltage into a pack voltage yet. Setting this to the measured
-// ratio — pack millivolts per thousand pin millivolts — is the whole of the
-// calibration, and `calibrated` below follows from it.
+// Pack millivolts per thousand millivolts at the pin. Two equal resistors, so
+// the ratio is 2.
 //
-// Take the reading with a meter on the pack terminals and the `power` command on
-// screen, at two charge levels: two points give the ratio AND the offset, one
-// gives a guess. Until then pack_mv is zero rather than wrong, because a battery
-// gauge that lies is worse than one that admits it does not know.
-constexpr int kDividerPerMille = 0;  // 0 = uncalibrated
+// INFERRED, not measured with a meter — and the inference is sound rather than
+// convenient. A working 1S pack read 2012 mV at the pin, and only a ratio of 2
+// puts that anywhere a lithium cell can be: 4.02 V. The next divider anyone fits
+// would say 3.02 V (a nearly flat cell, which would not have been running the
+// board) or 6.04 V (a voltage this chemistry does not reach). One meter reading
+// across the pack terminals against `power`'s pin mV confirms it, and if it
+// disagrees this is the only line that changes.
+constexpr int kDividerPerMille = 2000;
+
+// Above this, treat the post as running on external power.
+//
+// A heuristic, because this board gives no honest answer. The TP4054 holds a
+// charging pack at its 4.2 V constant-voltage point and leaves it near there
+// after termination, while a pack under load falls below 4.05 V within minutes of
+// unplugging — so the threshold separates the two nearly all the time.
+//
+// It is wrong in exactly one window: the first few minutes after a full pack is
+// unplugged, when the post believes it is still on the charger and stays awake.
+// That is the harmless direction of the error, and it costs a few minutes of
+// backlight rather than a missed reading.
+//
+// The obvious alternative does not work: usb_serial_jtag_is_connected() detects a
+// USB *host*, and its own documentation says a power bank "will never be
+// considered as connected". A post on a wall charger would read as unplugged and
+// put itself to sleep on mains, which is the opposite of what the setting says.
+constexpr int kExternalPowerMv = 4120;
+
+// The FT6336 pulls its interrupt line low on a touch and leaves it high at rest —
+// the same polarity the touch driver's own config states.
+constexpr int kTouchIntActiveLevel = 0;
+
+// --- State of charge --------------------------------------------------------
+// A published approximation of a lithium cell's resting curve, not a measurement
+// of this pack. It exists because voltage alone is unreadable at a glance and a
+// linear map would be a lie: 4.2 to 3.9 is the first quarter of the charge, then
+// the cell sits near 3.7 for most of its life and falls off a cliff. Interpolating
+// between these points reproduces that shape well enough for a bar, which is why
+// the bar is what the main screen draws.
+//
+// The ends are the parts that are not approximate: 4.2 V is the TP4054's own
+// constant-voltage setpoint, fixed in silicon, and 3.3 V is where a 1S pack under
+// load is done. Neither had to be measured.
+struct CurvePoint { int mv; int pct; };
+constexpr CurvePoint kSocCurve[] = {
+    {4200, 100}, {3900, 75}, {3700, 50}, {3600, 25}, {3300, 0},
+};
+constexpr int kSocPoints = static_cast<int>(sizeof(kSocCurve) / sizeof(kSocCurve[0]));
+
+// --- Turning off ------------------------------------------------------------
+// Off wakes on a touch, and on nothing else.
+//
+// The first version polled the pack every thirty seconds and came back when the
+// voltage said a charger was there. That was wrong in both directions on USB,
+// because it tested a level where the question is an edge: a pack that is being
+// charged is a moving target, so switching off with a part-charged pack plugged in
+// meant the post turned itself back on partway through the charge. The pack simply
+// cannot answer "has a charger just appeared" — only a wire from VBUS to a spare
+// expansion pin could, and this board has none.
+//
+// Touch is better than the behaviour it replaces on every axis that matters: off
+// means off on USB and on battery alike, there is no polling so no wake current at
+// all, and "touch the screen to turn it back on" is a shorter sentence than the one
+// it replaces.
+//
+// IO17 is the FT6336's interrupt line — active low, idle high, and RTC-capable, so
+// ext0 can watch it while everything else is stopped. The touch driver runs in
+// polling mode and never claims it (int_gpio_num = GPIO_NUM_NC), so there is
+// nothing to hand back but the pad itself.
+// RTC memory survives deep sleep but is uninitialised after a power-on reset, so
+// it is checked against a magic AND against the reset reason. Either alone would
+// eventually read garbage as "the user switched this off", which is a post that
+// refuses to boot.
+constexpr uint32_t kOffMagic = 0x0FF0FF01;
+RTC_DATA_ATTR uint32_t s_off_magic;
+
+// Where the dim and dark rungs land when a sleep deadline is in play. The ladder
+// is then scaled to fit underneath it instead of using the Kconfig delays, so one
+// number — settings::sleep_after_s — is the whole policy rather than the third of
+// three that all have to agree. A 60 s sleep dims at 20 and darkens at 40; an
+// hour-long one lands close to the Kconfig defaults anyway.
+constexpr uint32_t kDimFractionNum  = 1;
+constexpr uint32_t kDarkFractionNum = 2;
+constexpr uint32_t kFractionDen     = 3;
 
 // --- Deep sleep -------------------------------------------------------------
 // The fourth rung is deliberately unreachable, and this is the gate rather than
@@ -96,6 +176,7 @@ adc_cali_handle_t         s_cali = nullptr;
 Tier     s_tier = Tier::Active;
 Battery  s_battery = {};
 uint32_t s_idle_ms = 0;
+bool     s_external = true;  // assumed until the first sample says otherwise
 // When something that is not a touch last insisted the device was in use — a
 // serial `power wake`, or anything else that decides the screen has earned being
 // lit. LVGL's own counter cannot be reset from outside without faking an input
@@ -153,14 +234,47 @@ void apply(Tier t) {
   }
 }
 
-Tier tier_for(uint32_t idle, bool alarm_active) {
+// Does this mode, on this supply, ever put the post to sleep?
+bool sleeps(settings::PowerMode mode, bool external) {
+  switch (mode) {
+    case settings::PowerMode::AlwaysOn:    return false;
+    case settings::PowerMode::AlwaysSleep: return true;
+    default:                               return !external;
+  }
+}
+
+Tier tier_for(uint32_t idle, bool alarm_active, settings::PowerMode mode, bool external,
+              uint32_t sleep_after_ms) {
   // An alarm outranks the whole ladder, and lights the screen rather than merely
   // holding it: the panel it raises is useless on a dark display, and a post that
   // beeps in the dark makes someone hunt for a device instead of reading it.
   if (alarm_active) return Tier::Active;
-  if (idle >= kDarkAfterMs) return kDeepSleepReady ? Tier::Asleep : Tier::Dark;
-  if (idle >= kDimAfterMs) return Tier::Dim;
+
+  if (!sleeps(mode, external)) {
+    // Nothing to fit underneath, so the rungs are the Kconfig ones and the ladder
+    // simply stops at Dark.
+    if (idle >= kDarkAfterMs) return Tier::Dark;
+    if (idle >= kDimAfterMs) return Tier::Dim;
+    return Tier::Active;
+  }
+
+  if (idle >= sleep_after_ms) return kDeepSleepReady ? Tier::Asleep : Tier::Dark;
+  if (idle >= sleep_after_ms * kDarkFractionNum / kFractionDen) return Tier::Dark;
+  if (idle >= sleep_after_ms * kDimFractionNum / kFractionDen) return Tier::Dim;
   return Tier::Active;
+}
+
+int percent_for(int pack_mv) {
+  if (pack_mv >= kSocCurve[0].mv) return 100;
+  for (int i = 1; i < kSocPoints; ++i) {
+    if (pack_mv >= kSocCurve[i].mv) {
+      const CurvePoint& hi = kSocCurve[i - 1];
+      const CurvePoint& lo = kSocCurve[i];
+      const int span_mv = hi.mv - lo.mv;
+      return lo.pct + (pack_mv - lo.mv) * (hi.pct - lo.pct) / span_mv;
+    }
+  }
+  return 0;
 }
 
 void sample_battery(Battery* out) {
@@ -169,6 +283,7 @@ void sample_battery(Battery* out) {
   out->raw = 0;
   out->pin_mv = 0;
   out->pack_mv = 0;
+  out->pct = 0;
 
   if (s_adc == nullptr) return;
   if (adc_oneshot_read(s_adc, kAdcChannel, &out->raw) != ESP_OK) return;
@@ -179,6 +294,7 @@ void sample_battery(Battery* out) {
   }
   if (out->calibrated) {
     out->pack_mv = out->pin_mv * kDividerPerMille / 1000;
+    out->pct = percent_for(out->pack_mv);
   }
 }
 
@@ -198,6 +314,10 @@ void task(void*) {
     Battery b;
     sample_battery(&b);
 
+    const settings::Settings cfg = settings::get();
+    const uint32_t sleep_after_ms = static_cast<uint32_t>(cfg.sleep_after_s) * kMsPerSec;
+    const bool external = b.calibrated && b.present && b.pack_mv >= kExternalPowerMv;
+
     Tier want;
     {
       Lock l;
@@ -206,7 +326,8 @@ void task(void*) {
       if (since_wake < idle) idle = since_wake;
       s_idle_ms = idle;
       s_battery = b;
-      want = tier_for(idle, alarm_active);
+      s_external = external;
+      want = tier_for(idle, alarm_active, cfg.power_mode, external, sleep_after_ms);
       s_tier = want;
     }
 
@@ -263,7 +384,12 @@ void register_command() {
   esp_console_cmd_register(&cmd);
 }
 
+// Idempotent. Nothing calls it twice today, but a second adc_oneshot_new_unit() on
+// the same unit fails rather than being a no-op, and the symptom of that would be a
+// post with no battery sense at all — expensive to diagnose for a guard this cheap.
 esp_err_t init_adc() {
+  if (s_adc != nullptr) return ESP_OK;
+
   const adc_oneshot_unit_init_cfg_t unit_cfg = {
       .unit_id = kAdcUnit,
   };
@@ -341,6 +467,47 @@ Battery battery() {
   if (s_mutex == nullptr) return Battery{};
   Lock l;
   return s_battery;
+}
+
+bool deep_sleep_armed() { return kDeepSleepReady; }
+
+void turn_off() {
+  ESP_LOGW(kTag, "switching off; a touch on the screen is the way back");
+  s_off_magic = kOffMagic;
+  // Blanked before sleeping rather than left to the pin falling on its own, so the
+  // screen goes out at the moment of the tap instead of a beat later.
+  display::set_on(false);
+
+  const gpio_num_t pin = static_cast<gpio_num_t>(board::kTouchInt);
+  // The pull-up has to be held through the sleep by the RTC domain, not the normal
+  // GPIO matrix, which is powered down. Without it the line floats and the post
+  // wakes on nothing at all — which looks exactly like Turn Off not working.
+  rtc_gpio_pullup_en(pin);
+  rtc_gpio_pulldown_dis(pin);
+  esp_sleep_enable_ext0_wakeup(pin, kTouchIntActiveLevel);
+  esp_deep_sleep_start();
+}
+
+bool resume_from_off() {
+  // The reset reason is the authoritative half of the check; the magic guards the
+  // case where a deep-sleep wake happens for some other reason later.
+  if (esp_reset_reason() != ESP_RST_DEEPSLEEP || s_off_magic != kOffMagic) {
+    s_off_magic = 0;
+    return false;
+  }
+  s_off_magic = 0;
+
+  // Hand the pad back before the touch driver comes up: it was held by the RTC
+  // domain across the sleep, and a pin still owned by RTC IO is not one the normal
+  // GPIO matrix can configure.
+  rtc_gpio_deinit(static_cast<gpio_num_t>(board::kTouchInt));
+  return true;
+}
+
+bool on_external_power() {
+  if (s_mutex == nullptr) return true;
+  Lock l;
+  return s_external;
 }
 
 void wake() {

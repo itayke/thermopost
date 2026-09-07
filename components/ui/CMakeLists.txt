@@ -18,6 +18,7 @@ idf_component_register(
         cloud           # the Network page: link state, addresses, sync
         cloud           # the status strip's uploaded counter
         display         # the LVGL lock and the display handle
+        power           # the Power page: the ladder's mode, tier and battery
         recorder        # the graph's history ring
         sensor          # the live reading
         settings

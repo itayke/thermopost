@@ -9,7 +9,9 @@ idf_component_register(
         alert           # a live alarm outranks the whole ladder
         display         # the backlight, the panel blank, and the LVGL lock
         esp_adc         # oneshot + curve-fitting calibration on ADC1_CH8
+        esp_driver_gpio # rtc_io, to hold the touch interrupt pad through deep sleep
         esp_timer       # the monotonic clock wake() stamps
+        settings        # the power mode and the sleep delay
         console         # the `power` serial command
         lvgl__lvgl      # the inactivity counter the ladder reads
 )

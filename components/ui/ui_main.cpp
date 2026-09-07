@@ -7,6 +7,7 @@
 #include "alert.hpp"
 #include "alert_logic.hpp"
 #include "cloud.hpp"
+#include "power.hpp"
 #include "display.hpp"
 #include "esp_log.h"
 #include "recorder.hpp"
@@ -38,11 +39,11 @@ constexpr size_t kTextMax = 64;
 constexpr size_t kClockTextMax = 16;
 constexpr const char* kNoValue = "--.-";
 
-// Short on purpose. "clock not set" is the fuller phrase, and it is what the menu
-// says because it has the width — but at Montserrat 14 it reaches under the centred
-// readout, and a status line that collides with the number beside it is worse than
-// a terser one.
-constexpr const char* kNoClock = "no clock";
+// The battery meter and the charge bolt now share this row, so the clock's slot is
+// narrower than the phrase "no clock" needs. Shaped like a time instead, which
+// reads as "not set yet" in the same way the readout's "--.-" does, and costs no
+// width at all. The menu screen still says it in words, where there is room.
+constexpr const char* kNoClock = "--:--";
 
 // --- Top band: clock under the nav pill (left) -------------------------------
 // The pill itself is shared chrome now (ui_chrome.hpp) — every screen puts one in
@@ -52,14 +53,56 @@ constexpr const char* kNoClock = "no clock";
 // clock has to follow the pill when the pill moves, and recomputing the same sum
 // is exactly how the two came apart the first time.
 constexpr int32_t kClockGap = 3;
-constexpr int32_t kClockY = kNavPillBottom + kClockGap;
-// Wide enough for kNoClock and no wider, so a long value can never grow into the
-// readout's space.
-constexpr int32_t kClockW = 64;
+constexpr int32_t kClockRowY = kNavPillBottom + kClockGap;
+
+// --- Top band: the battery meter, left of the clock --------------------------
+// A drawn meter rather than LVGL's battery glyphs, which come in five fixed steps
+// — a bar that moves continuously says "draining" where a five-state icon says
+// nothing for an hour and then jumps. Drawn from plain objects rather than a paint
+// callback: a body, a terminal nub, and a fill whose width is the charge.
+//
+// No number beside it. A percentage on a lithium pack is an estimate off a
+// published curve (see power.cpp), and printing an estimate to the digit invites
+// it to be read as a measurement. The bar carries exactly the precision the
+// estimate has; the Power page prints the number and the volts it came from.
+constexpr int32_t kBatBodyW = 18;
+constexpr int32_t kBatBodyH = 11;
+constexpr int32_t kBatBorder = 1;
+constexpr int32_t kBatNubW = 2;
+constexpr int32_t kBatNubH = 5;
+constexpr int32_t kBatInnerPad = 1;
+constexpr int32_t kBatFillMaxW = kBatBodyW - 2 * (kBatBorder + kBatInnerPad);
+constexpr int32_t kBatW = kBatBodyW + kBatNubW;
+
+// The bolt keeps its slot whether or not it is showing, so the clock does not
+// shuffle sideways every time a charger is plugged in.
+constexpr int32_t kBatGap  = 3;
+constexpr int32_t kBoltW   = 9;
+constexpr int32_t kBatX    = kEdgePad;
+constexpr int32_t kBoltX   = kBatX + kBatW + kBatGap;
+constexpr int32_t kClockX  = kBoltX + kBoltW + kBatGap;
+constexpr int32_t kClockW  = kEdgePad + kNavPillW - kClockX;
+static_assert(kClockW >= 40, "the clock's slot is too narrow for HH:MM");
+
+// Centred on the text line beside it rather than sharing its top edge: the meter is
+// shorter than a line of Montserrat 14, and hanging both from the same y puts the
+// bar visibly above the digits.
+constexpr int32_t kBatY  = kClockRowY + (kFontBodyH - kBatBodyH) / 2;
+constexpr int32_t kBatNubY = kClockRowY + (kFontBodyH - kBatNubH) / 2;
+
+// Below this the bar goes amber. A quarter left on a lithium pack is not a quarter
+// of the runtime left — the curve falls away underneath it — so the colour change
+// belongs here rather than at some lower number that would arrive too late.
+constexpr int kBatteryLowPct = 25;
+
 // Exactly level at Montserrat 42: the clock's last row ends on the readout band's
 // own bottom edge, so the left column has no slack left and a smaller readout font
 // fails here rather than pushing the clock into the chart.
-static_assert(kClockY + kFontBodyH <= kTopPad + kReadoutH,
+constexpr int32_t kClockY = kClockRowY;
+// Exactly level at Montserrat 42: the clock's last row ends on the readout band's
+// own bottom edge, so the left column has no slack left and a smaller readout font
+// fails here rather than pushing the clock into the chart.
+static_assert(kClockRowY + kFontBodyH <= kTopPad + kReadoutH,
               "the clock row overflows the top band");
 
 // --- Top band: threshold chips (right) --------------------------------------
@@ -94,6 +137,7 @@ constexpr int32_t kReadoutUnitGap = 2;
 // --- Status strip: name on the first row, counters on the second -------------
 constexpr int32_t kStatusW = kScreenW - 2 * kEdgePad;
 constexpr int32_t kStatusRow2Y = kStatusY + kFontBodyH;
+
 
 // Shown in place of the high-water mark while no Sheet endpoint is configured.
 // Deliberately not "0" — zero uploaded is a claim that an uploader is running and
@@ -206,6 +250,11 @@ lv_obj_t* s_axis_right  = nullptr;
 lv_obj_t* s_name_lbl    = nullptr;
 lv_obj_t* s_counter_lbl = nullptr;
 lv_obj_t* s_clock_lbl   = nullptr;
+lv_obj_t* s_bat_body    = nullptr;
+lv_obj_t* s_bat_nub     = nullptr;
+lv_obj_t* s_bat_fill    = nullptr;
+lv_obj_t* s_bat_slash   = nullptr;
+lv_obj_t* s_bolt_lbl    = nullptr;
 lv_obj_t* s_alarm_panel = nullptr;
 lv_obj_t* s_alarm_title = nullptr;
 lv_obj_t* s_group       = nullptr;
@@ -221,6 +270,11 @@ lv_chart_series_t* s_max_series = nullptr;
 // points — a horizontal line at local y=0 keeps lv_line's self-sizing out of it.
 // Spans the plot area, not the object, so it stops at the chart's inner border.
 lv_point_precise_t s_line_pts[2] = {{0, 0}, {kPlotW, 0}};
+
+// Corner to corner across the meter's body — the "no pack fitted" mark. A slash
+// says absent where a dim, empty meter only says flat, and the two are worth
+// telling apart at a glance on a device that runs happily on USB alone.
+lv_point_precise_t s_slash_pts[2] = {{0, kBatBodyH - 1}, {kBatBodyW - 1, 0}};
 
 // Scratch for the chart rebuild. File scope rather than stack: 480 points across
 // four arrays is nearly 9 KB, and the LVGL task's stack has better uses. Only ever
@@ -415,7 +469,33 @@ void refresh(lv_timer_t* timer) {
                 static_cast<double>(settings::display_value(t.min_c100)));
   lv_label_set_text(s_min_num, text);
 
-  // --- clock, under the menu glyph
+  // --- the battery meter. Absent and empty are different things, and the slash is
+  // what separates them: a post running on USB with no pack fitted is a normal way
+  // to run one, and an empty meter would read as a fault.
+  const power::Battery bat = power::battery();
+  const bool have_pack = bat.present && bat.calibrated;
+  if (have_pack) {
+    lv_obj_add_flag(s_bat_slash, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(s_bat_fill, LV_OBJ_FLAG_HIDDEN);
+    const int32_t w = kBatFillMaxW * std::clamp(bat.pct, 0, 100) / 100;
+    // Never zero while a pack is answering: a bar that disappears entirely looks
+    // like the meter stopped working rather than like the pack is nearly flat.
+    lv_obj_set_width(s_bat_fill, std::max<int32_t>(w, 1));
+    lv_obj_set_style_bg_color(s_bat_fill,
+                              bat.pct < kBatteryLowPct ? kColorFault : kColorOk,
+                              LV_PART_MAIN);
+  } else {
+    lv_obj_remove_flag(s_bat_slash, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_bat_fill, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  if (power::on_external_power()) {
+    lv_obj_remove_flag(s_bolt_lbl, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(s_bolt_lbl, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  // --- clock, beside the meter
   char clock[kClockTextMax];
   if (!format_clock(clock, sizeof(clock), kClockFmt)) {
     std::snprintf(clock, sizeof(clock), "%s", kNoClock);
@@ -424,6 +504,10 @@ void refresh(lv_timer_t* timer) {
 
   // --- status strip
   lv_label_set_text(s_name_lbl, s.name);
+
+  // Blank rather than a placeholder when there is no pack: a post on USB with no
+  // battery fitted is a normal way to run one, and a permanent "--" in the corner
+  // would read as a fault that needs looking into.
 
   // Three different questions, which is why one number was not enough:
   //   live     — appended since boot; frozen means logging has stopped
@@ -547,13 +631,54 @@ void build_chart(lv_obj_t* scr) {
   lv_obj_set_style_line_color(s_min_line, kColorLow, LV_PART_MAIN);
 }
 
+// A bare rectangle with no padding, border or scrolling — the building block the
+// meter is assembled from. lv_obj's defaults are all wrong for a shape this small.
+lv_obj_t* make_block(lv_obj_t* parent, int32_t w, int32_t h, lv_color_t color) {
+  lv_obj_t* o = lv_obj_create(parent);
+  lv_obj_set_size(o, w, h);
+  lv_obj_set_style_pad_all(o, 0, LV_PART_MAIN);
+  lv_obj_set_style_border_width(o, 0, LV_PART_MAIN);
+  lv_obj_set_style_radius(o, 0, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(o, color, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(o, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+  return o;
+}
+
+void build_battery_meter(lv_obj_t* scr) {
+  s_bat_body = make_block(scr, kBatBodyW, kBatBodyH, kColorBg);
+  lv_obj_set_style_border_width(s_bat_body, kBatBorder, LV_PART_MAIN);
+  lv_obj_set_style_border_color(s_bat_body, kColorMuted, LV_PART_MAIN);
+  lv_obj_set_pos(s_bat_body, kBatX, kBatY);
+
+  s_bat_nub = make_block(scr, kBatNubW, kBatNubH, kColorMuted);
+  lv_obj_set_pos(s_bat_nub, kBatX + kBatBodyW, kBatNubY);
+
+  // A child of the body, so the border insets it and the fill can never paint over
+  // the outline it is supposed to sit inside.
+  s_bat_fill = make_block(s_bat_body, kBatFillMaxW, kBatBodyH - 2 * (kBatBorder + kBatInnerPad),
+                          kColorOk);
+  lv_obj_set_pos(s_bat_fill, kBatInnerPad, kBatInnerPad);
+
+  s_bat_slash = lv_line_create(scr);
+  lv_line_set_points(s_bat_slash, s_slash_pts, 2);
+  lv_obj_set_style_line_width(s_bat_slash, kBatBorder, LV_PART_MAIN);
+  lv_obj_set_style_line_color(s_bat_slash, kColorMuted, LV_PART_MAIN);
+  lv_obj_set_pos(s_bat_slash, kBatX, kBatY);
+
+  s_bolt_lbl = make_boxed_label(scr, kFontBody, kColorOk, kBoltW, LV_TEXT_ALIGN_CENTER);
+  lv_label_set_text(s_bolt_lbl, LV_SYMBOL_CHARGE);
+  lv_obj_set_pos(s_bolt_lbl, kBoltX, kClockRowY);
+}
+
 void build_top_band(lv_obj_t* scr) {
   build_nav_pill(scr, &s_nav, NavGlyph::Burger, "Menu", menu_clicked);
 
-  // --- clock, directly under the pill
+  // --- the battery meter, the charge bolt and the clock, in that order
+  build_battery_meter(scr);
   s_clock_lbl = make_chip_label(scr, kColorMuted, kClockW, LV_TEXT_ALIGN_LEFT);
   lv_label_set_long_mode(s_clock_lbl, LV_LABEL_LONG_MODE_DOTS);
-  lv_obj_set_pos(s_clock_lbl, kEdgePad, kClockY);
+  lv_obj_set_pos(s_clock_lbl, kClockX, kClockRowY);
 
   // --- the readout, centred as a group in the gap between the side columns
   s_readout_row = lv_obj_create(scr);
@@ -676,6 +801,10 @@ void build_screen(lv_obj_t* scr) {
   int n = 0;
   fade[n++] = s_nav.btn;
   fade[n++] = s_clock_lbl;
+  fade[n++] = s_bat_body;
+  fade[n++] = s_bat_nub;
+  fade[n++] = s_bat_slash;
+  fade[n++] = s_bolt_lbl;
   fade[n++] = s_readout_row;
   fade[n++] = s_max_arrow;
   fade[n++] = s_max_num;

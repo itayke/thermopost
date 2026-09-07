@@ -22,6 +22,21 @@ namespace thermopost::settings {
 
 enum class TempUnit : uint8_t { Fahrenheit = 0, Celsius = 1 };
 
+// What the post is allowed to do when nobody is looking at it. The ladder in the
+// `power` component reads this; see power.hpp for what each rung costs.
+//
+// The middle one is the default because it is the only one that is right in both
+// situations without being told which it is in: a post on a bench stays lit and
+// answers instantly, and the same post on a battery in a tank room puts itself
+// away. The other two exist because "which situation am I in" is inferred rather
+// than known, and an operator who can see the post is a better judge than a
+// voltage threshold.
+enum class PowerMode : uint8_t {
+  AlwaysOn = 0,         // never sleeps; on battery it simply runs until flat
+  OnWhenConnected = 1,  // full behaviour on external power, ladder on battery
+  AlwaysSleep = 2,      // sleeps regardless — wakes on touch, stays up, goes back
+};
+
 // --- Accepted ranges. Anything loaded from NVS or passed to a setter is clamped
 // --- into these, so no downstream code has to defend against a wild value.
 constexpr uint16_t kIntervalMinS = 10;    // below this the log grows absurdly fast
@@ -58,6 +73,19 @@ constexpr int16_t kHysteresisDefaultC100 = 50;  // 0.50 °C
 constexpr uint8_t kVolumeMaxPct = 100;
 constexpr uint8_t kVolumeDefaultPct = 70;
 
+// Idle seconds before the post sleeps, in the two modes that sleep at all. The
+// dim and dark rungs are scaled to fit underneath it, so this one number is the
+// whole of the policy rather than the third of three that have to agree.
+//
+// The floor is ten seconds because anything shorter sleeps while a hand is still
+// moving towards the screen; the ceiling is an hour, which is "effectively awake"
+// without needing a fourth mode to say so.
+constexpr uint16_t kSleepAfterMinS = 10;
+constexpr uint16_t kSleepAfterMaxS = 3600;
+constexpr uint16_t kSleepAfterDefaultS = 60;
+
+constexpr PowerMode kPowerModeDefault = PowerMode::OnWhenConnected;
+
 // --- Post name -------------------------------------------------------------
 // Thermo Posts are deployed in groups, one per tank, and every upload is tagged
 // with the post's name — a row in a shared Sheet is meaningless without knowing
@@ -85,6 +113,8 @@ struct Settings {
   TempUnit unit;             // display only — never affects stored values
   bool     sound_enabled;    // master mute for the alarm tone
   uint8_t  volume_pct;       // 0..100
+  PowerMode power_mode;      // what idling is allowed to do
+  uint16_t sleep_after_s;    // idle seconds before sleeping, where sleeping happens
   char     name[kNameMaxLen + 1];  // never empty; see kNameMaxLen
 };
 
@@ -109,6 +139,8 @@ esp_err_t set_graph_points(uint16_t v);
 esp_err_t set_unit(TempUnit u);
 esp_err_t set_sound_enabled(bool on);
 esp_err_t set_volume_pct(uint8_t pct);
+esp_err_t set_power_mode(PowerMode m);
+esp_err_t set_sleep_after_s(uint16_t v);
 
 // Set the post name. Sanitizes rather than rejects — non-ASCII bytes dropped,
 // surrounding spaces trimmed, truncated to kNameMaxLen — because a value arriving

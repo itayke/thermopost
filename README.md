@@ -10,8 +10,8 @@ By Itay Keren <itay@untame.com>. Copyright (c) 2026 Itay Keren.
 
 > **Working, and not finished.** Everything the device does day to day is built and
 > most of it is confirmed on hardware: the screens, the settings, the alarm, the
-> Sheet upload. What is left is power — the idle ladder is in, deep sleep is gated
-> behind a battery measurement. See [Status](#status).
+> Sheet upload, the idle ladder and battery sense. What is left is deep sleep,
+> gated on mirroring state through RTC memory. See [Status](#status).
 
 ## Hardware
 
@@ -172,7 +172,7 @@ the main screen:
 
 ```
  (☰ Menu)      72.4°F            ↑ 86.0
- 14:32                           ↓ 59.0
+ [███░]⚡14:32                    ↓ 59.0
  ┌────────────────────────────────────┐
  │- - - - - - - - - - - - - - - - - - │   max, dashed
  │       ╭─╮      ╭──╮                │
@@ -323,7 +323,7 @@ under the number that caused it:
 
 ```
  (☰ Menu)      86.4°F            ↑ 86.0
- 14:32                           ↓ 59.0
+ [███░]⚡14:32                    ↓ 59.0
  ┌────────────────────────────────────┐
  │  ┌──────────────────────────────┐  │
  │  │           TOO HOT            │  │
@@ -391,6 +391,20 @@ recorder keeps writing, the alarm keeps watching. A dark post is a working post.
 | **Dark** | `THERMOPOST_POWER_DARK_SECONDS` (180) | Panel blanked with `set_on(false)` — it stops scanning, but the framebuffer survives, so coming back is the screen that was already there rather than a repaint from nothing |
 | **Asleep** | — | Deep sleep. Deliberately unreachable; see below |
 
+The main screen carries the charge as a **drawn meter at the top left**, before
+the clock, with a bolt between them when a charger is detected. Drawn rather than
+taken from LVGL's battery glyphs, which come in five fixed steps — a bar that moves
+continuously says "draining", where a five-state icon says nothing for an hour and
+then jumps. It goes amber under a quarter, because a quarter of the voltage range
+left on a lithium pack is much less than a quarter of the runtime.
+
+**No number beside it**, on purpose. A percentage on a lithium pack is an estimate
+off a published curve, and printing an estimate to the digit invites it to be read
+as a measurement; a bar carries exactly the precision the estimate has. With no
+pack fitted the meter is struck through with a slash rather than merely drawn
+empty — a post running on USB alone is a normal way to run one, and an empty meter
+would read as a flat battery instead of no battery.
+
 Idle time comes from LVGL's own inactivity counter, which the indev layer resets
 on a real press — so the ladder counts *taps* rather than interrupt edges, and
 this component never has to know anything about the touch controller.
@@ -405,13 +419,9 @@ also what lets the screen go back down.
 
 The fourth rung is a `kDeepSleepReady = false` in
 [`power.cpp`](components/power/power.cpp) rather than code that isn't written
-yet, so the reason travels with it. Two things have to land first:
+yet, so the reason travels with it. One thing has to land first — the divider is
+now known, so this is the whole of what is left:
 
-- **The divider ratio**, because sleeping is only correct on battery and USB
-  presence has no other detectable source on this board. Nothing here converts a
-  pin voltage into a pack voltage until that is measured — `pack_mv` reads zero
-  and `calibrated` reads false, because a battery gauge that lies is worse than
-  one that admits it does not know.
 - **RTC-memory mirroring** for the alarm's `Status` and the recorder's in-flight
   interval, because deep sleep loses RAM. An acknowledged alarm that forgets it
   was acknowledged would re-alert on every wake, which turns Off into a button
@@ -419,32 +429,98 @@ yet, so the reason travels with it. Two things have to land first:
   already backfills it from the log, so a wake rebuilds it exactly as a cold boot
   does.
 
-#### Measuring the divider
+#### The divider, and why USB presence is a guess
 
-`power` on the serial console is the instrument, and it exists so the capture is
-one line rather than an afternoon:
+The ratio is **2** — two equal resistors — inferred rather than metered, and the
+inference is sound rather than convenient: a working 1S pack read 2012 mV at the
+pin, and only a ratio of 2 puts that anywhere lithium can be (4.02 V). The next
+divider anyone fits would claim 3.02 V, a nearly flat cell that would not have
+been running the board, or 6.04 V, which this chemistry does not reach. One meter
+reading across the pack terminals confirms it, and it is one line in
+`power.cpp` if it disagrees.
+
+**External power is a heuristic, not a fact.** The TP4054 holds a charging pack at
+its 4.2 V constant-voltage point and leaves it near there after termination, while
+a pack under load falls below 4.05 V within minutes — so a threshold at 4.12 V
+separates the two nearly always. It is wrong in exactly one window, the first few
+minutes after a full pack is unplugged, and that is the harmless direction: the
+post stays awake a little longer than it needed to.
+
+The obvious alternative does not work, and its own documentation says so.
+`usb_serial_jtag_is_connected()` detects a USB *host* — "connected to a power bank
+will never be considered as connected", for lack of SOF packets. A post on a wall
+charger would read as unplugged and put itself to sleep on mains, which is the
+opposite of what "On when connected" promises. A real answer needs VBUS divided
+onto one of the expansion header's spare pins.
+
+`power` on the serial console is still the instrument for checking any of it:
 
 ```
 post> power                                  # tier, idle, raw counts, pin mV
 post> power wake                             # light the screen from the console
 ```
 
-Take it with a meter on the pack terminals at two charge levels. Two points give
-the ratio *and* the offset; one gives a guess. The same four captures — charging,
-charged, battery-only fresh, battery-only run down — also answer whether USB
-presence is readable from GPIO9 at all, which is what decides how the two power
-policies switch.
-
 The dim rung is also the outstanding backlight question answering itself: if
 GPIO45 turns out to gate a fixed-current driver rather than accept PWM, the Dim
 tier will visibly do nothing and collapse into on/off.
+
+### The Power page
+
+Three modes and one number, because the interesting question is not how long to
+wait but who decides whether waiting is allowed at all.
+
+| Mode | What it does |
+|---|---|
+| **Always on** | Never sleeps. On battery it runs until flat — for a post that is watched more than it is left. |
+| **On when connected** | The default: full behaviour on external power, the ladder and sleep once the cable is out. |
+| **Always sleep** | Sleeps on any supply. The longest-running mode, and the one that makes a mains-powered post behave like a battery one. |
+
+The mode is a cycling capsule whose label *is* the value, the same idiom as the
+unit and the mute. Beside the sleep-delay stepper sits the one cell on any page
+that cannot be tapped: **the estimated percentage and the voltage it came from,
+one above the other**. Both, deliberately — the percentage is read off a published
+lithium curve and the volts are the measurement, and showing only the friendly
+number would hide which of the two can be trusted.
+
+**Turn Off** shares the top row with the mode. It takes two taps — the label
+becomes "Sure?" for four seconds — because one stray tap would otherwise blank the
+device until someone came back to it. It deep-sleeps with exactly one wake source,
+the touch controller's interrupt on `IO17`, so **a touch on the screen is the way
+back and nothing else is**.
+
+It started out waking on USB instead, and that was wrong in both directions:
+switching off with a part-charged pack plugged in turned the post back on partway
+through the charge. The mistake was testing a *level* where the question is an
+*edge* — a pack being charged is a moving target, and the pack simply cannot answer
+"has a charger just appeared". Only a wire from VBUS to a spare expansion pin
+could, and this board has none. Touch is better on every axis anyway: off means off
+on USB and battery alike, and with no polling there is no wake current to pay.
+
+It is as off as software gets here, which is not all the way — without cutting the
+rail there is residual draw, and how much is the same unmeasured number the rest of
+the power model waits on.
+
+That it can exist before the automatic fourth rung is the point: **switching off
+needs none of the RTC-memory mirroring that sleeping does.** Sleeping to save power
+has to come back as the same device it was, with its alarm acknowledgement and its
+interval intact. Being switched off does not — that state is *meant* to be gone,
+and coming back is honestly a fresh boot.
+
+**The sleep delay is the whole policy, not a third of it.** Dim and dark are
+scaled to fall at a third and two thirds of it rather than keeping their own
+Kconfig delays, so a 60-second sleep dims at 20 and blanks at 40. Three
+independent numbers that all had to agree would have been three ways to configure
+a ladder that skips its own rungs.
+
+Two of the three modes are mostly promises until deep sleep is armed, and the
+page's footer says so outright rather than letting them look finished.
 
 ### The menu and the settings screens
 
 Tapping *Menu* cross-fades to the hub. Its heading is **the post's name**, not the
 word "MENU" — in a rack of identical boxes, the useful thing to say at the top of a
 settings screen is which box this is, and the chevron in the corner already says
-what the screen is for. Under it sit four pages and a line carrying the full date,
+what the screen is for. Under it sit five pages and a line carrying the full date,
 the time and the total record count. The grid is two columns wide; if an odd
 number of pages ever lands there, the last one centres on a row of its own
 rather than sitting flush left with a hole beside it.
@@ -452,8 +528,9 @@ rather than sitting flush left with a hole beside it.
 ```
  (‹ Back)          North Tank
         Rename from Network setup page
-   (  Temperature   ) (    Recording   )
-   (      Sound     ) (     Network    )
+   (      Power     ) (   Temperature  )
+   (    Recording   ) (      Sound     )
+   (     Network    )
           Tue 28 Jul   14:32   4213 records
 ```
 
@@ -462,6 +539,7 @@ rather than sitting flush left with a hole beside it.
 | Temperature | alarm below, alarm above, recovery margin, **unit** | the exact stored hundredths |
 | Recording | interval, points plotted | the time span the graph covers |
 | Sound | alarm sound on/off, volume, **test alarm** | whether alarms will be audible |
+| Power | mode, sleep delay, **battery volts** | what this mode actually does, or that sleep is not armed |
 | Network | Configure, Forget; link, address and sync status above | where the name and Sheet URL are edited |
 
 Every value is edited with espressopost's stepper — a caption, and `(-) value (+)`
@@ -877,7 +955,7 @@ returns.
 
 ## Status
 
-**Everything through the alerts milestone is built. Power is what's left.**
+**Everything is built but deep sleep, which is gated on one piece of plumbing.**
 
 | | |
 |---|---|
@@ -888,6 +966,7 @@ returns.
 | ✅ Built | `touch` — FT6336 via the FT5x06 driver, registered as an LVGL pointer indev |
 | ✅ Built | `recorder` + `ui` — one record per interval, graph backfilled from the log on boot, main screen with readout / chart / status strip |
 | ✅ Built | menu hub + three settings pages, ported stepper with coupled bounds, cross-fade between screens |
+| ✅ Verified | the backlight genuinely dims under LEDC PWM — the wiki documents GPIO45 as a plain high/low enable, and it is not, so the ladder's Dim rung is real |
 | ✅ Verified | `audio` — ES8311 over I²S, beeping alarm tone out of the speaker, driven from the Sound page's test button |
 | ✅ Built | `cloud` + `shell` — Wi-Fi with unbounded backoff, SNTP clock, `cloud` serial command |
 | ✅ Built | the upload queue — batched POSTs to Apps Script, NVS high-water mark, host-tested JSON |
@@ -895,32 +974,8 @@ returns.
 | ✅ Built | the Configure page — a QR that joins the setup AP, closing it on the way out |
 | ✅ Built | the form trimmed to network + identity; thresholds in tenths, hold-to-repeat, debounced writes |
 | ✅ Built | alerts — the state machine driven at the sample cadence, the alarm panel with Snooze / Off, the tone in bursts |
-| 🔨 In progress | power — the idle ladder, alarm sleep-inhibit, battery sense |
-| ⬜️ Queued | the Power settings page (see below), after the ladder lands |
-
-### Queued: the Power settings page
-
-Once the idle ladder works, the policy stops being a compile-time constant and
-becomes a setting, on a **Power** page under the menu:
-
-| Mode | What it does |
-|---|---|
-| **Always on** | Never sleeps. On battery it simply runs until flat — for a post that is watched more than it is left. |
-| **On when connected** | The default, and what the ladder implements today: full behaviour on USB, the ladder and deep sleep only once the cable is out. |
-| **Always sleep** | Sleeps regardless of USB. Wakes on touch, stays up for the delay below, then goes back down. The longest-running mode and the one that makes a mains-powered post behave like a battery one. |
-
-Plus one stepper — **seconds before sleep**, default **60** — which the second and
-third modes both key off and the first ignores.
-
-Costs a row in `ui_menu.cpp`'s `kEntries[]` and nothing else: the menu grid was
-built a row taller than its four entries need, and `kGridRowsPlanned = 3` already
-static_asserts that a third row fits under the hint. That headroom was put there
-for exactly this.
-
-Deliberately after the ladder rather than with it. A settings page for a policy
-whose tiers have not been measured would be three modes that all look the same on
-a bench, and the mode that matters most — Always sleep — cannot be judged at all
-until the battery numbers say what it buys.
+| ✅ Built | power — the idle ladder, alarm sleep-inhibit, battery sense and state-of-charge meter, the Power page, Turn Off |
+| ⬜️ Not started | deep sleep — the fourth rung, gated on RTC-memory mirroring |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
 power. Each step ends at something flashable and observable. (Sensor jumped
@@ -940,13 +995,6 @@ sampling cadence and M9's RTC-memory mirror an obvious place to attach.
   deciding whether deeper duty-cycling is worth the complexity. The numbers that
   decide it: average current with the screen on, dimmed, backlight off, and
   deep-sleeping between one-minute readings.
-- **Backlight dimming.** GPIO45 drives the backlight and LEDC PWM lights it, and
-  until the idle ladder landed only 100% had ever been exercised — the Dim rung is
-  now the test. The wiki documents the pin as a plain high/low enable, so if the
-  circuit gates a fixed-current driver the intermediate duty cycles may not
-  actually dim — in which case `set_brightness()` collapses to on/off and the
-  power model loses its "dim" tier. Settles the first time a post is left alone
-  for a minute.
 - **Is IO4 actually spare?** MCLK does not work on it, so the codec derives its
   master clock from BCLK and `kI2sMclkRouted` is false, which leaves the pin
   undriven. Whether that is a missing trace or a wrong pin number is unresolved,

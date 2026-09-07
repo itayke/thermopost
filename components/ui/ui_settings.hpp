@@ -2,7 +2,7 @@
 
 #include "lvgl.h"
 
-// The editor screens the menu hub opens. Three pages, each a heading, a chevron pill
+// The editor screens the menu hub opens. Four pages, each a heading, a chevron pill
 // in the shared top-left corner, up to four controls on a two-column grid, and a
 // footer line stating something derived — the exact stored value behind a stepper,
 // the time span a graph window works out to, the consequence of a toggle being off.
@@ -17,7 +17,7 @@
 // showing — and then clobbering — a stale value.
 namespace thermopost::ui::settings_screen {
 
-// Builds all three pages into `scr` and registers them with nav. Call after
+// Builds all four pages into `scr` and registers them with nav. Call after
 // nav::init(). Network is a page of its own — see ui_network.hpp.
 void build_all(lv_obj_t* scr);
 

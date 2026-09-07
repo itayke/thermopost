@@ -30,6 +30,7 @@ enum class Screen : uint8_t {
   Temperature,
   Recording,
   Sound,
+  Power,
   Network,
   Configure,
   kCount,

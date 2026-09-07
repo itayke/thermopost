@@ -48,8 +48,49 @@ struct Battery {
   int  raw;         // the ADC's own counts
   int  pin_mv;      // millivolts at GPIO9, i.e. after the divider
   int  pack_mv;     // millivolts at the pack, or 0 while uncalibrated
+  // 0..100, and an estimate rather than a measurement — lithium's voltage is
+  // nearly flat through the middle of its range, so the curve behind this is a
+  // published approximation and not a property of your pack. Good to about ten
+  // points; useful as a bar, misleading as a number, which is why the main screen
+  // draws it and only the Power page prints it beside the volts it came from.
+  int  pct;
 };
 Battery battery();
+
+// Is the fourth rung actually reachable? False until deep sleep is wired, and the
+// Power settings page says so on its footer rather than offering two modes that
+// quietly do half of what they claim.
+bool deep_sleep_armed();
+
+// Is the post running on external power?
+//
+// A heuristic rather than a fact — see the threshold in power.cpp for what it
+// keys off and the one window where it is wrong. Answers true before the first
+// battery sample, which is the safe way round: it means a post never sleeps
+// because it has not measured itself yet.
+bool on_external_power();
+
+// Shut down until someone touches the screen — the Power page's Turn Off button.
+//
+// Deep sleep with exactly one wake source, the touch controller's interrupt line.
+// No timer, so a switched-off post stays off on USB and on battery alike and costs
+// nothing to keep that way. Never returns.
+//
+// This needs none of the RTC-memory mirroring the *automatic* fourth rung waits
+// on, and that is the whole reason it can exist first. Sleeping to save power has
+// to come back as the same device it was; being switched off does not — the alarm
+// state and the interval in progress are meant to be gone, and coming back is
+// honestly a fresh boot.
+//
+// As off as software gets on this board, which is not all the way: without cutting
+// the rail there is always residual draw, and how much depends on what else on the
+// module stays awake.
+[[noreturn]] void turn_off();
+
+// Called first thing in app_main. Returns true when this boot is a wake from Turn
+// Off rather than an ordinary one, and hands the touch interrupt pad back from the
+// RTC domain so the touch driver can claim it normally.
+bool resume_from_off();
 
 // Push the ladder back to the top — the effect a touch has, available to anything
 // else that decides the screen has earned being lit.
