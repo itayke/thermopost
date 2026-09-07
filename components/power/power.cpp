@@ -17,6 +17,7 @@
 #include "esp_adc/adc_oneshot.h"
 #include "esp_console.h"
 #include "driver/rtc_io.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_log.h"
@@ -68,23 +69,55 @@ static_assert(board::kBatteryAdc == 9,
 // disagrees this is the only line that changes.
 constexpr int kDividerPerMille = 2000;
 
-// Above this, treat the post as running on external power.
+// When to treat the post as running on external power. TWO thresholds, not one,
+// and the gap between them is the whole point.
 //
-// A heuristic, because this board gives no honest answer. The TP4054 holds a
-// charging pack at its 4.2 V constant-voltage point and leaves it near there
-// after termination, while a pack under load falls below 4.05 V within minutes of
-// unplugging — so the threshold separates the two nearly all the time.
+// This is the FALLBACK signal, and it is only consulted when the USB monitor below
+// says nothing. The TP4054 holds a charging pack at its 4.2 V constant-voltage
+// point and leaves it near there after termination, while a pack under load falls
+// away — so a threshold separates the two, badly.
 //
-// It is wrong in exactly one window: the first few minutes after a full pack is
-// unplugged, when the post believes it is still on the charger and stays awake.
-// That is the harmless direction of the error, and it costs a few minutes of
-// backlight rather than a missed reading.
+// It has been wrong twice, in opposite ways, and both are worth keeping written
+// down. A single threshold chattered: a pack resting near the line crossed it back
+// and forth on ADC noise and on the load steps the backlight and the radio make, so
+// the charge bolt blinked. Then a hysteresis band from 4.05 to 4.15 latched: a pack
+// an hour off the charger sits around 4.10, which is above the falling edge, so the
+// state could never leave "external" at all. The band has to sit *between* the two
+// states, and the second attempt put it on top of one of them.
 //
-// The obvious alternative does not work: usb_serial_jtag_is_connected() detects a
-// USB *host*, and its own documentation says a power bank "will never be
-// considered as connected". A post on a wall charger would read as unplugged and
-// put itself to sleep on mains, which is the opposite of what the setting says.
-constexpr int kExternalPowerMv = 4120;
+// 4.16 rising is under the TP4054's worst-case low CV point, so a charger at the
+// bottom of its tolerance still registers; 4.12 falling is high enough that a
+// discharging pack clears it in minutes rather than hours.
+//
+// It still cannot be quick, and no threshold can: unplugging a full pack leaves it
+// above the falling edge until the load drags it down. That lag belongs to the
+// signal. The only real fix is a wire from VBUS to a spare expansion pin.
+constexpr int kExternalRiseMv = 4160;
+constexpr int kExternalFallMv = 4120;
+static_assert(kExternalFallMv < kExternalRiseMv,
+              "the external-power thresholds are inverted, which is worse than having "
+              "only one: the state would flip on every sample");
+
+// Reads averaged per sample. The ESP32-S3's SAR is noisy enough at 12 dB that a
+// single conversion wanders by more than a millivolt or two, and the divider
+// doubles whatever it wanders by. Sixteen reads cost microseconds on a tick that
+// happens five times a second.
+constexpr int kAdcSamples = 16;
+
+// The other half of the answer, and the better half when it applies.
+//
+// IDF's USB monitor watches for start-of-frame packets on a FreeRTOS tick hook, so
+// it knows within milliseconds whether a USB *host* is on the other end of the
+// cable — exact and instant, where the pack voltage is neither. Its limit is stated
+// in its own documentation: a power bank or a wall charger sends no SOF packets and
+// "will never be considered as connected". So it is authoritative when true and
+// silent when false, which is why the pack voltage is still consulted underneath
+// it rather than replaced by it.
+//
+// Merely calling it is what links the monitor in — the object file carries an
+// ESP_SYSTEM_INIT_FN that registers the tick hook — and it reports connected until
+// proven otherwise, which is the safe way round for something that gates sleep.
+bool usb_host_present() { return usb_serial_jtag_is_connected(); }
 
 // The FT6336 pulls its interrupt line low on a touch and leaves it high at rest —
 // the same polarity the touch driver's own config states.
@@ -177,6 +210,24 @@ Tier     s_tier = Tier::Active;
 Battery  s_battery = {};
 uint32_t s_idle_ms = 0;
 bool     s_external = true;  // assumed until the first sample says otherwise
+
+// Has a USB *host* ever answered since boot?
+//
+// Sticky, and it is what makes unplugging register at all. The pack cannot answer
+// this question: a just-unplugged pack sits around 4.18 V and a charging one at
+// 4.20, twenty millivolts apart and under the noise floor, so no threshold
+// separates "on the charger" from "off it ten seconds ago". Three different
+// thresholds were tried before that was obvious.
+//
+// But a board that has seen a host is a board where the host signal works, and
+// there it is exact in both directions and instant. So the voltage path stops being
+// consulted the moment something better exists, and remains for posts that only
+// ever meet dumb chargers.
+//
+// Known limit: a post moved from a computer to a wall charger within one boot reads
+// as unplugged, because the sticky flag outlives the cable. A reboot clears it, and
+// the wire from VBUS would retire the whole question.
+bool     s_ever_saw_host = false;
 // When something that is not a touch last insisted the device was in use — a
 // serial `power wake`, or anything else that decides the screen has earned being
 // lit. LVGL's own counter cannot be reset from outside without faking an input
@@ -286,7 +337,17 @@ void sample_battery(Battery* out) {
   out->pct = 0;
 
   if (s_adc == nullptr) return;
-  if (adc_oneshot_read(s_adc, kAdcChannel, &out->raw) != ESP_OK) return;
+
+  int sum = 0;
+  int taken = 0;
+  for (int i = 0; i < kAdcSamples; ++i) {
+    int raw = 0;
+    if (adc_oneshot_read(s_adc, kAdcChannel, &raw) != ESP_OK) continue;
+    sum += raw;
+    ++taken;
+  }
+  if (taken == 0) return;
+  out->raw = sum / taken;
   out->present = true;
 
   if (s_cali != nullptr) {
@@ -301,6 +362,7 @@ void sample_battery(Battery* out) {
 void task(void*) {
   TickType_t last = xTaskGetTickCount();
   Tier applied = Tier::Active;
+  bool s_last_logged_external = !s_external;  // force the first state to be logged
   apply(applied);
 
   for (;;) {
@@ -316,7 +378,21 @@ void task(void*) {
 
     const settings::Settings cfg = settings::get();
     const uint32_t sleep_after_ms = static_cast<uint32_t>(cfg.sleep_after_s) * kMsPerSec;
-    const bool external = b.calibrated && b.present && b.pack_mv >= kExternalPowerMv;
+    // Once a USB host has ever answered on this cable, the host signal is the only
+    // one worth listening to — in both directions. See kEverSawHost's note.
+    // Otherwise fall back to the pack, with hysteresis, holding the previous answer
+    // inside the band and holding it too when there is no usable reading at all: a
+    // post that cannot measure itself must not conclude it is unplugged and put
+    // itself to sleep.
+    const bool host = usb_host_present();
+    if (host) s_ever_saw_host = true;
+
+    bool external = s_external;
+    if (s_ever_saw_host) {
+      external = host;
+    } else if (b.present && b.calibrated) {
+      external = s_external ? b.pack_mv >= kExternalFallMv : b.pack_mv >= kExternalRiseMv;
+    }
 
     Tier want;
     {
@@ -329,6 +405,14 @@ void task(void*) {
       s_external = external;
       want = tier_for(idle, alarm_active, cfg.power_mode, external, sleep_after_ms);
       s_tier = want;
+    }
+
+    // Logged on the transition, so the console shows the moment a cable changed
+    // rather than requiring the screen to be watched.
+    if (external != s_last_logged_external) {
+      s_last_logged_external = external;
+      ESP_LOGI(kTag, "external power %s (usb host %s, pack %d mV)",
+               external ? "yes" : "no", host ? "yes" : "no", b.pack_mv);
     }
 
     if (want != applied) {
@@ -361,6 +445,8 @@ int cmd_power(int argc, char** argv) {
     std::printf("battery   no answer from ADC1_CH8 (GPIO%d)\n", board::kBatteryAdc);
     return 0;
   }
+  std::printf("usb host  %s\n", usb_host_present() ? "yes" : "no");
+  std::printf("external  %s\n", on_external_power() ? "yes" : "no");
   std::printf("battery   raw %d counts, %d mV at the pin\n", b.raw, b.pin_mv);
   if (b.calibrated) {
     std::printf("pack      %d mV\n", b.pack_mv);

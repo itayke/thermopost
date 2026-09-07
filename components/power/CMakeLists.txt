@@ -10,6 +10,7 @@ idf_component_register(
         display         # the backlight, the panel blank, and the LVGL lock
         esp_adc         # oneshot + curve-fitting calibration on ADC1_CH8
         esp_driver_gpio # rtc_io, to hold the touch interrupt pad through deep sleep
+        esp_driver_usb_serial_jtag  # the SOF monitor: is a USB host on the cable?
         esp_timer       # the monotonic clock wake() stamps
         settings        # the power mode and the sleep delay
         console         # the `power` serial command

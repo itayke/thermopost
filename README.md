@@ -441,10 +441,38 @@ reading across the pack terminals confirms it, and it is one line in
 
 **External power is a heuristic, not a fact.** The TP4054 holds a charging pack at
 its 4.2 V constant-voltage point and leaves it near there after termination, while
-a pack under load falls below 4.05 V within minutes — so a threshold at 4.12 V
-separates the two nearly always. It is wrong in exactly one window, the first few
-minutes after a full pack is unplugged, and that is the harmless direction: the
-post stays awake a little longer than it needed to.
+a pack under load falls away within minutes — so a threshold separates the two
+most of the time.
+
+So the pack is the *fallback*. The primary signal is IDF's USB monitor, which
+watches for start-of-frame packets on a tick hook and therefore knows within
+milliseconds whether a USB **host** is on the cable — exact and instant, where the
+pack voltage is neither. Its limit is in its own documentation: a wall charger or a
+power bank sends no SOF packets and "will never be considered as connected". So it
+is authoritative when true and silent when false, which is why the voltage is still
+consulted underneath rather than replaced.
+
+**Once a host has ever answered, the host signal is the only one consulted** — in
+both directions, and that stickiness is what makes unplugging register at all.
+
+It took three wrong thresholds to see why. The first chattered: a pack resting near
+a single line crossed it back and forth on ADC noise and on the load steps the
+backlight and radio make, so the bolt blinked. The second latched: a hysteresis band
+of 4.05–4.15 sat *on top of* the discharge curve rather than between two states, and
+a pack an hour off the charger rests around 4.10, so "external" could never clear.
+The third was subtler and fatal — **a just-unplugged pack sits at about 4.18 V and a
+charging one at 4.20.** Twenty millivolts, under the noise floor. The pack simply
+cannot answer whether a charger is attached, and no threshold ever will.
+
+So the voltage path stops being consulted the moment something better exists, and
+survives only for posts that meet nothing but dumb chargers. Its readings are still
+averaged over sixteen conversions, because the S3's SAR wanders by more than a
+millivolt at 12 dB and the divider doubles whatever it wanders by.
+
+Known limit: a post moved from a computer to a wall charger inside one boot reads as
+unplugged, because the sticky flag outlives the cable. A reboot clears it. `power`
+prints `usb host` and `external` separately, and the transition is logged, so which
+input is driving the answer is always visible.
 
 The obvious alternative does not work, and its own documentation says so.
 `usb_serial_jtag_is_connected()` detects a USB *host* — "connected to a power bank
