@@ -102,8 +102,60 @@ get_idf                          # put idf.py + xtensa toolchain on PATH
 cd /Users/itaykeren/Code/GitHub/thermopost
 
 idf.py set-target esp32s3        # first time only
-idf.py build
-idf.py -p /dev/cu.usbmodem<N> flash monitor   # Ctrl+] to exit
+idf.py -p /dev/cu.usbmodem<N> flash monitor   # the everyday loop; Ctrl+] to exit
+```
+
+That one command is the whole edit loop — `flash` compiles first, so a separate
+`idf.py build` is redundant:
+
+| target | compiles? | what it does |
+|---|---|---|
+| `set-target esp32s3` | — | writes `sdkconfig` for the chip. Once per checkout; it **overwrites an existing `sdkconfig`**, so don't repeat it casually |
+| `build` | yes | compiles into `build/`; a near-no-op when nothing changed |
+| `flash` | **yes** | compiles, then writes bootloader + partition table + app over USB |
+| `monitor` | **no** | attaches to the serial port and prints what the device says |
+
+**Why `flash` compiles is worth knowing, because it isn't `idf.py` doing it.**
+`idf.py` has its own notion of ordering — that is what makes `idf.py build flash
+monitor` run in that order rather than the order it feels like — but those are
+*order-only* dependencies: they reorder commands you typed and never add one you
+didn't. The build comes from the layer below. `idf.py flash` shells out to ninja's
+`flash` target, and that target depends on `app`, `bootloader` and
+`partition_table_bin`:
+
+```
+$ ninja -t query flash
+flash:
+  input: phony
+    CMakeFiles/flash
+    app
+    bootloader
+    esp-idf/partition_table/partition_table_bin
+```
+
+So the guarantee is real, and it comes from CMake rather than from the `idf.py`
+front end.
+
+`monitor` sits outside all of that: it runs no ninja target, just reads
+`project_description.json` and the ELF and opens the port. Two consequences:
+
+- It is **safe on its own** — `idf.py -p /dev/cu.usbmodem<N> monitor` watches a
+  board that is already running, without reflashing it.
+- It reads the ELF **from `build/`, not from the device**, which is what lets it turn
+  a panic backtrace into function names. Build without flashing and those names come
+  from firmware the board isn't running — the one case where a decoded backtrace can
+  quietly lie to you.
+
+`-p` matters only to the targets that talk to the board (`flash`, `monitor`,
+`erase-flash`); `build` never touches the port. Omitted, `idf.py` guesses, and gets
+it right with one board plugged in.
+
+Occasionally useful:
+
+```sh
+idf.py fullclean            # after an sdkconfig or partition-table change acts strangely
+idf.py menuconfig           # the config UI; see the bring-up probe section
+./tests/host/run.sh         # the IDF-free logic, on the host — no board needed
 ```
 
 Editor red squigglies on `esp_err_t` and friends before the first build are
