@@ -8,9 +8,10 @@ reading to a Google Sheet over Wi-Fi.
 
 By Itay Keren <itay@untame.com>. Copyright (c) 2026 Itay Keren.
 
-> **Early-stage.** The pin map, display and sensor are confirmed on hardware and
-> the main screen is up. The menu, alerts and cloud sync are not built yet. See
-> [Status](#status).
+> **Working, and not finished.** Everything the device does day to day is built and
+> most of it is confirmed on hardware: the screens, the settings, the alarm, the
+> Sheet upload. What is left is power — the idle ladder is in, deep sleep is gated
+> behind a battery measurement. See [Status](#status).
 
 ## Hardware
 
@@ -166,8 +167,8 @@ are cosmetic and never go away.
 ## Usage
 
 Flashing brings the board up through `display → nvs → storage → settings → i2c →
-sensor → touch → audio → recorder → ui → shell → cloud → alert` and draws the main
-screen:
+sensor → touch → audio → recorder → ui → shell → cloud → alert → power` and draws
+the main screen:
 
 ```
  (☰ Menu)      72.4°F            ↑ 86.0
@@ -376,6 +377,67 @@ exactly when it is true, and the speaker sounds exactly when it is true *and*
 alarms are unmuted. Two predicates would be two things to keep in step, and the
 failure mode is the one nobody would report: a panel offering a Snooze button for
 a tone that already stopped.
+
+### Going quiet when nobody is looking
+
+Idle time walks the screen down a ladder, and nothing below the first rung is
+visible to the parts of the device that matter — the sensor keeps sampling, the
+recorder keeps writing, the alarm keeps watching. A dark post is a working post.
+
+| Rung | After | What changes |
+|---|---|---|
+| **Active** | — | Full brightness |
+| **Dim** | `THERMOPOST_POWER_DIM_SECONDS` (60) | Backlight to `THERMOPOST_POWER_DIM_PERCENT` (20%) |
+| **Dark** | `THERMOPOST_POWER_DARK_SECONDS` (180) | Panel blanked with `set_on(false)` — it stops scanning, but the framebuffer survives, so coming back is the screen that was already there rather than a repaint from nothing |
+| **Asleep** | — | Deep sleep. Deliberately unreachable; see below |
+
+Idle time comes from LVGL's own inactivity counter, which the indev layer resets
+on a real press — so the ladder counts *taps* rather than interrupt edges, and
+this component never has to know anything about the touch controller.
+
+**A live alarm outranks the ladder and lights the screen**, rather than merely
+holding it where it was. The panel an alarm raises is useless on a dark display,
+and a post that beeps in the dark makes someone hunt for a device instead of
+reading it. Snooze and Off therefore pick up a second meaning for free: they are
+also what lets the screen go back down.
+
+#### Deep sleep is gated, on purpose
+
+The fourth rung is a `kDeepSleepReady = false` in
+[`power.cpp`](components/power/power.cpp) rather than code that isn't written
+yet, so the reason travels with it. Two things have to land first:
+
+- **The divider ratio**, because sleeping is only correct on battery and USB
+  presence has no other detectable source on this board. Nothing here converts a
+  pin voltage into a pack voltage until that is measured — `pack_mv` reads zero
+  and `calibrated` reads false, because a battery gauge that lies is worse than
+  one that admits it does not know.
+- **RTC-memory mirroring** for the alarm's `Status` and the recorder's in-flight
+  interval, because deep sleep loses RAM. An acknowledged alarm that forgets it
+  was acknowledged would re-alert on every wake, which turns Off into a button
+  that does nothing. The graph's ring needs no mirroring — `recorder::init()`
+  already backfills it from the log, so a wake rebuilds it exactly as a cold boot
+  does.
+
+#### Measuring the divider
+
+`power` on the serial console is the instrument, and it exists so the capture is
+one line rather than an afternoon:
+
+```
+post> power                                  # tier, idle, raw counts, pin mV
+post> power wake                             # light the screen from the console
+```
+
+Take it with a meter on the pack terminals at two charge levels. Two points give
+the ratio *and* the offset; one gives a guess. The same four captures — charging,
+charged, battery-only fresh, battery-only run down — also answer whether USB
+presence is readable from GPIO9 at all, which is what decides how the two power
+policies switch.
+
+The dim rung is also the outstanding backlight question answering itself: if
+GPIO45 turns out to gate a fixed-current driver rather than accept PWM, the Dim
+tier will visibly do nothing and collapse into on/off.
 
 ### The menu and the settings screens
 
@@ -776,7 +838,8 @@ code is. Push the IDF dependency into the wrapper beside it.
 │   ├── storage/            LittleFS append-log + rotation with stable absolute indices
 │   ├── settings/           NVS-backed name / interval / band / units / sound
 │   ├── shell/              the USB serial REPL commands are registered into
-│   └── alert/              alarm decision logic (IDF-free, host-tested) + its tick
+│   ├── alert/              alarm decision logic (IDF-free, host-tested) + its tick
+│   └── power/              the idle ladder and the battery sense
 ├── tools/                  the Apps Script sink for the Sheet
 └── tests/host/             Catch2 unit tests, no IDF
 ```
@@ -832,7 +895,32 @@ returns.
 | ✅ Built | the Configure page — a QR that joins the setup AP, closing it on the way out |
 | ✅ Built | the form trimmed to network + identity; thresholds in tenths, hold-to-repeat, debounced writes |
 | ✅ Built | alerts — the state machine driven at the sample cadence, the alarm panel with Snooze / Off, the tone in bursts |
-| ⬜️ Not started | power |
+| 🔨 In progress | power — the idle ladder, alarm sleep-inhibit, battery sense |
+| ⬜️ Queued | the Power settings page (see below), after the ladder lands |
+
+### Queued: the Power settings page
+
+Once the idle ladder works, the policy stops being a compile-time constant and
+becomes a setting, on a **Power** page under the menu:
+
+| Mode | What it does |
+|---|---|
+| **Always on** | Never sleeps. On battery it simply runs until flat — for a post that is watched more than it is left. |
+| **On when connected** | The default, and what the ladder implements today: full behaviour on USB, the ladder and deep sleep only once the cable is out. |
+| **Always sleep** | Sleeps regardless of USB. Wakes on touch, stays up for the delay below, then goes back down. The longest-running mode and the one that makes a mains-powered post behave like a battery one. |
+
+Plus one stepper — **seconds before sleep**, default **60** — which the second and
+third modes both key off and the first ignores.
+
+Costs a row in `ui_menu.cpp`'s `kEntries[]` and nothing else: the menu grid was
+built a row taller than its four entries need, and `kGridRowsPlanned = 3` already
+static_asserts that a third row fits under the hint. That headroom was put there
+for exactly this.
+
+Deliberately after the ladder rather than with it. A settings page for a policy
+whose tiers have not been measured would be three modes that all look the same on
+a bench, and the mode that matters most — Always sleep — cannot be judged at all
+until the battery numbers say what it buys.
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
 power. Each step ends at something flashable and observable. (Sensor jumped
@@ -852,12 +940,13 @@ sampling cadence and M9's RTC-memory mirror an obvious place to attach.
   deciding whether deeper duty-cycling is worth the complexity. The numbers that
   decide it: average current with the screen on, dimmed, backlight off, and
   deep-sleeping between one-minute readings.
-- **Backlight dimming.** GPIO45 drives the backlight and LEDC PWM lights it, but
-  only 100% has been exercised so far. The wiki documents the pin as a plain
-  high/low enable, so if the circuit gates a fixed-current driver the
-  intermediate duty cycles may not actually dim — in which case
-  `set_brightness()` collapses to on/off and the power model loses its "dim"
-  tier. Settles the first time the idle policy steps it down.
+- **Backlight dimming.** GPIO45 drives the backlight and LEDC PWM lights it, and
+  until the idle ladder landed only 100% had ever been exercised — the Dim rung is
+  now the test. The wiki documents the pin as a plain high/low enable, so if the
+  circuit gates a fixed-current driver the intermediate duty cycles may not
+  actually dim — in which case `set_brightness()` collapses to on/off and the
+  power model loses its "dim" tier. Settles the first time a post is left alone
+  for a minute.
 - **Is IO4 actually spare?** MCLK does not work on it, so the codec derives its
   master clock from BCLK and `kI2sMclkRouted` is false, which leaves the pin
   undriven. Whether that is a missing trace or a wrong pin number is unresolved,

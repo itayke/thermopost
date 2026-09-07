@@ -13,7 +13,7 @@
 // Boot order, each step logging and continuing where it can:
 //
 //   display → nvs → storage → settings → i2c → sensor → touch → audio → recorder → ui
-//           → shell → cloud → alert → (power)
+//           → shell → cloud → alert → power
 //
 // Display comes first so a failure downstream still has somewhere to be shown.
 // `recorder` precedes `ui` because the graph is drawn from the ring that
@@ -22,8 +22,9 @@
 // command list is created there and a registration before it fails. `alert` comes
 // last of the running parts because it needs the sensor, the settings and the
 // codec and is needed by none of them; the UI reads it before it starts, which is
-// safe — alert::status() answers Normal until the first tick. The bracketed step
-// lands with its milestone.
+// safe — alert::status() answers Normal until the first tick. `power` is last of
+// all: its ladder reads the alarm, and it takes over the backlight from the fixed
+// level set at the bottom of this function.
 
 #include "board_i2c.hpp"
 #include "bringup_probe.hpp"
@@ -31,6 +32,7 @@
 #include "alert.hpp"
 #include "audio.hpp"
 #include "cloud.hpp"
+#include "power.hpp"
 #include "display.hpp"
 #include "recorder.hpp"
 #include "sensor.hpp"
@@ -112,9 +114,14 @@ extern "C" void app_main(void) {
   // cannot start its watchdog still shows the temperature, which is the one thing
   // it must never stop doing.
   step("alert", alert::init());
+  // After the alarm, because the idle ladder asks it whether the screen is
+  // allowed to go dark, and after the shell, because it registers a command.
+  step("power", power::init());
 
   // Last, so the panel lights only once there is a finished screen behind it —
   // otherwise the boot shows a frame of whatever the framebuffer happened to hold.
+  // power::init() has already started the ladder, whose first tick sets the same
+  // level; this is what lights the screen in the gap before it runs.
   display::set_brightness(kBootBrightnessPct);
 
   ESP_LOGI(kTag, "boot complete");

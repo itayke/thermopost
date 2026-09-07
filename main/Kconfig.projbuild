@@ -91,4 +91,36 @@ config THERMOPOST_ALERT_SNOOZE_MINUTES
         how far away the tank is: long enough to be doing something about it,
         short enough that walking away instead is not the same as switching the
         alarm off.
+# --- Power ------------------------------------------------------------------
+
+config THERMOPOST_POWER_DIM_SECONDS
+    int "Idle seconds before the backlight dims"
+    default 60
+    range 5 3600
+    help
+        The first rung of the idle ladder. Nothing but the backlight changes —
+        the sensor keeps sampling, the recorder keeps writing and the alarm keeps
+        watching, and an alarm takes the screen straight back to full.
+
+config THERMOPOST_POWER_DARK_SECONDS
+    int "Idle seconds before the panel blanks"
+    default 180
+    range 10 7200
+    help
+        The second rung, and it must be larger than the dim delay or the dim tier
+        is unreachable (power.cpp static_asserts it). The panel stops scanning and
+        the framebuffer survives, so a touch brings back the screen that was
+        already there rather than a repaint from nothing.
+
+config THERMOPOST_POWER_DIM_PERCENT
+    int "Backlight level in the dim tier, percent"
+    default 20
+    range 1 99
+    help
+        Low enough to be worth doing and high enough to still read the number
+        from arm's length. Worth checking on hardware before trusting: GPIO45 is
+        documented by the wiki as a plain high/low enable, so if the circuit gates
+        a fixed-current driver the intermediate duty cycles may not dim at all and
+        this tier collapses into on/off.
+
 endmenu

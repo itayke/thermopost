@@ -31,6 +31,7 @@ idf_component_register(
         touch
         ui
         alert
+        power
 )
 
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)
