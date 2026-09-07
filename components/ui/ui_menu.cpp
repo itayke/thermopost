@@ -24,7 +24,7 @@ constexpr size_t kClockTextMax = 24;
 // The name is read-only here, and this says why rather than leaving the user to
 // hunt for the edit that isn't there. It is the one free-text setting, and an
 // on-screen keyboard on a 2.8" panel would be the worst part of the product.
-constexpr const char* kRenameHint = "rename from the setup page";
+constexpr const char* kRenameHint = "Rename from Network setup page";
 
 // One row per entry, so adding a screen is a row here rather than an edit in three
 // places. Order is grid order: left to right, then top to bottom. Declared above the

@@ -261,15 +261,17 @@ opposite corners, which is a stricter check than one dot ever was.
 Tapping *Menu* cross-fades to the hub. Its heading is **the post's name**, not the
 word "MENU" — in a rack of identical boxes, the useful thing to say at the top of a
 settings screen is which box this is, and the chevron in the corner already says
-what the screen is for. Under it sit four pages and a line carrying the full date,
-the time and the total record count.
+what the screen is for. Under it sit five pages and a line carrying the full date,
+the time and the total record count. The grid is two columns wide, so the odd
+one out centres on a row of its own rather than sitting flush left with a hole
+beside it.
 
 ```
  (‹ Back)          North Tank
-              rename from the setup page
+        Rename from Network setup page
    (   Thresholds   ) (    Recording   )
-
    (      Sound     ) (     Display    )
+            (     Network    )
           Tue 28 Jul   14:32   4213 records
 ```
 
@@ -279,6 +281,7 @@ the time and the total record count.
 | Recording | interval, points plotted | the time span the graph covers |
 | Sound | alarm sound on/off, volume, **test alarm** | whether alarms will be audible |
 | Display | temperature unit | that tapping the reading does this too |
+| Network | Configure, Forget; link, address and sync status above | where the name and Sheet URL are edited |
 
 Every value is edited with espressopost's stepper — a caption, and `(-) value (+)`
 with two amber discs either side — the same capsule as every other button, at the
