@@ -78,6 +78,16 @@ constexpr int32_t kBatW = kBatBodyW + kBatNubW;
 // shuffle sideways every time a charger is plugged in.
 constexpr int32_t kBatGap  = 3;
 constexpr int32_t kBoltW   = 9;
+
+// The bolt reads a shade heavy beside the meter at the body size. Scaled at draw
+// time rather than set in a smaller face: Montserrat 12 is not compiled, and
+// adding a whole font for one glyph would cost flash and put a fourth entry in a
+// theme that deliberately names three roles. LVGL scales in 1/256ths, and the pivot
+// has to be the box centre — it defaults to the top-left corner, which would shrink
+// the glyph away from the clock instead of in place.
+constexpr int32_t kScaleUnity   = 256;
+constexpr int32_t kBoltScalePct = 85;
+constexpr int32_t kBoltScale    = kScaleUnity * kBoltScalePct / 100;
 constexpr int32_t kBatX    = kEdgePad;
 constexpr int32_t kBoltX   = kBatX + kBatW + kBatGap;
 constexpr int32_t kClockX  = kBoltX + kBoltW + kBatGap;
@@ -668,6 +678,9 @@ void build_battery_meter(lv_obj_t* scr) {
 
   s_bolt_lbl = make_boxed_label(scr, kFontBody, kColorOk, kBoltW, LV_TEXT_ALIGN_CENTER);
   lv_label_set_text(s_bolt_lbl, LV_SYMBOL_CHARGE);
+  lv_obj_set_style_transform_pivot_x(s_bolt_lbl, kBoltW / 2, LV_PART_MAIN);
+  lv_obj_set_style_transform_pivot_y(s_bolt_lbl, kFontBodyH / 2, LV_PART_MAIN);
+  lv_obj_set_style_transform_scale(s_bolt_lbl, kBoltScale, LV_PART_MAIN);
   lv_obj_set_pos(s_bolt_lbl, kBoltX, kClockRowY);
 }
 
