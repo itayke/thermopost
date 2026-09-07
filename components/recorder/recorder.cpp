@@ -141,8 +141,8 @@ Sample close_aggregate() {
 // the *device* stops alarming, which is about not chattering the speaker. These
 // flags are a property of the record: they have to stay re-derivable from the
 // values stored beside them and the band, or a Sheet column disagrees with its own
-// numbers. So M7 changing how the device behaves does not change what is written
-// here.
+// numbers. So the alarm's hysteresis, its snooze and its acknowledgement change
+// how the device behaves without changing a byte of what is written here.
 //
 // Tested against the interval's extremes rather than its mean, and both bits can
 // be set: a minute that swung through the band from below the minimum to above the

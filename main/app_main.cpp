@@ -13,18 +13,22 @@
 // Boot order, each step logging and continuing where it can:
 //
 //   display → nvs → storage → settings → i2c → sensor → touch → audio → recorder → ui
-//           → shell → cloud → (alert → power)
+//           → shell → cloud → alert → (power)
 //
 // Display comes first so a failure downstream still has somewhere to be shown.
 // `recorder` precedes `ui` because the graph is drawn from the ring that
 // recorder::init() backfills — the other way round would paint an empty chart and
 // then fill it a frame later. `shell` precedes `cloud` because esp_console's
-// command list is created there and a registration before it fails. The bracketed
-// steps land with their milestones.
+// command list is created there and a registration before it fails. `alert` comes
+// last of the running parts because it needs the sensor, the settings and the
+// codec and is needed by none of them; the UI reads it before it starts, which is
+// safe — alert::status() answers Normal until the first tick. The bracketed step
+// lands with its milestone.
 
 #include "board_i2c.hpp"
 #include "bringup_probe.hpp"
 
+#include "alert.hpp"
 #include "audio.hpp"
 #include "cloud.hpp"
 #include "display.hpp"
@@ -103,6 +107,11 @@ extern "C" void app_main(void) {
   // samples, logs and alarms. It just cannot stamp a wall-clock time or upload —
   // and this board has no RTC, so the clock is genuinely the radio's to bring.
   step("cloud", cloud::init());
+  // Last, and needing everything above it: the band from settings, the readings
+  // from sensor, the speaker from audio. Non-fatal like the rest — a post that
+  // cannot start its watchdog still shows the temperature, which is the one thing
+  // it must never stop doing.
+  step("alert", alert::init());
 
   // Last, so the panel lights only once there is a finished screen behind it —
   // otherwise the boot shows a frame of whatever the framebuffer happened to hold.

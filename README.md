@@ -166,7 +166,8 @@ are cosmetic and never go away.
 ## Usage
 
 Flashing brings the board up through `display → nvs → storage → settings → i2c →
-sensor → touch → audio → recorder → ui → shell → cloud` and draws the main screen:
+sensor → touch → audio → recorder → ui → shell → cloud → alert` and draws the main
+screen:
 
 ```
  (☰ Menu)      72.4°F            ↑ 86.0
@@ -183,10 +184,16 @@ sensor → touch → audio → recorder → ui → shell → cloud` and draws th
 ```
 
 The big number is the current reading in the configured unit (°F by default) and
-it changes colour with the band — white inside it, warm above the maximum, cold
-below the minimum, amber when the sensor isn't answering. The colour says which
-way the temperature went before the digits are legible, which is what a screen
-read across a room actually conveys.
+it changes colour with the alarm state — white inside the band, warm above the
+maximum, cold below the minimum, amber when the sensor isn't answering. The colour
+says which way the temperature went before the digits are legible, which is what a
+screen read across a room actually conveys.
+
+That colour comes from the alarm state machine, not from comparing the reading to
+the band on the spot. The difference is the recovery margin: a bare compare
+re-decides on every sample, so a temperature parked on the limit flickers the
+readout between two colours several times a minute while the alarm itself — which
+has hysteresis — is not changing its mind at all.
 
 Every screen asks for a *role* rather than a face — `kFontBody` for captions,
 chips and the status strip, `kFontTitle` for headings and button labels,
@@ -308,6 +315,68 @@ and the vertical inverted, which is `mirror_x`, because the mirrors act in the
 controller's frame that `swap_xy` then transposes. The two targets now sit in
 opposite corners, which is a stricter check than one dot ever was.
 
+### When the band is left
+
+Once a reading leaves the band, a panel opens over the top of the graph, just
+under the number that caused it:
+
+```
+ (☰ Menu)      86.4°F            ↑ 86.0
+ 14:32                           ↓ 59.0
+ ┌────────────────────────────────────┐
+ │  ┌──────────────────────────────┐  │
+ │  │           TOO HOT            │  │
+ │  │  (  Snooze 5m  ) (   Off   ) │  │
+ │  └──────────────────────────────┘  │
+ │- - - - - - - - - - - - - - - - - - │
+ └────────────────────────────────────┘
+```
+
+It says **TOO HOT**, **TOO COLD** or **NO READING**, in the same colour the
+readout has just turned. Deliberately not full-screen: a post that hides its own
+temperature the moment the temperature starts mattering has the instinct exactly
+backwards, so the panel covers the top of the graph and leaves the number, the
+threshold chips and the recent trace where they were.
+
+The speaker joins in — the same beeping tone the Sound page's test button plays,
+in bursts rather than continuously. Continuous is louder without being more
+informative, and a room with an unattended post in it still has to be a room
+someone can work in; the burst is what makes ignoring the alarm a decision rather
+than an impossibility. Muting alarms on the Sound page silences the tone and
+nothing else. A muted post still shows the panel, because a mute is a statement
+about noise and not about whether the tank matters.
+
+**Two buttons, and the difference between them is how long they last.**
+
+| | |
+|---|---|
+| **Snooze** | Quiet for `THERMOPOST_ALERT_SNOOZE_MINUTES` (5 by default), then say it again if the reading is still out of band. The one to press when you are already dealing with it. |
+| **Off** | Quiet until the temperature changes what it is doing — recovers, or goes out the other side. The one to press when you have decided this excursion is fine. |
+
+Both are scoped to the *episode*, not to the alarm. Any change of state clears
+them, so a post that was told "Off" while too hot still shouts when it later goes
+too cold, and a snooze bought for one excursion is not spent on the next one. The
+tint stays either way: a silenced alarm is still an alarm, and the number goes on
+saying so after the panel has been dismissed.
+
+Snoozing lives in `alert_logic.cpp` rather than in the runtime around it, which is
+why it is a deadline in the `Status` rather than a timer somewhere. That put the
+awkward cases under host tests instead of under a stopwatch and a warm hand on the
+sensor: a snooze that outlives its episode, a High→Low flip inside the snoozed
+span, and an acknowledgement absorbing a running snooze all have cases in
+`tests/host/test_alert_logic.cpp`.
+
+The panel belongs to the main screen, so an alarm that fires while a settings page
+is open is audible but not visible until Back. Left that way on purpose: yanking
+the screen out from under someone mid-edit to show them a number they can already
+hear is a worse trade than a few seconds of delay.
+
+One predicate — `alert::should_alert()` — decides both outputs. The panel is up
+exactly when it is true, and the speaker sounds exactly when it is true *and*
+alarms are unmuted. Two predicates would be two things to keep in step, and the
+failure mode is the one nobody would report: a panel offering a Snooze button for
+a tone that already stopped.
+
 ### The menu and the settings screens
 
 Tapping *Menu* cross-fades to the hub. Its heading is **the post's name**, not the
@@ -404,8 +473,8 @@ step over 10…3600 s is either hundreds of taps or too coarse to reach the fast
 
 The Sound page also carries a **Test alarm** button: two seconds of the real tone at
 the real volume, so the speaker can be judged without waiting for a threshold to be
-crossed. It is the same code path M7's alarm will use, which is the point — a test
-that exercises a second implementation proves nothing about the first. A second tap
+crossed. It is the same code path the alarm itself uses, which is the point — a
+test that exercises a second implementation proves nothing about the first. A second tap
 stops it rather than queueing another two seconds. Its length is
 `THERMOPOST_AUDIO_TEST_SECONDS`, raisable to a minute, which is what makes the pins
 meterable while a tone is held.
@@ -707,7 +776,7 @@ code is. Push the IDF dependency into the wrapper beside it.
 │   ├── storage/            LittleFS append-log + rotation with stable absolute indices
 │   ├── settings/           NVS-backed name / interval / band / units / sound
 │   ├── shell/              the USB serial REPL commands are registered into
-│   └── alert/              alarm decision logic (IDF-free, host-tested)
+│   └── alert/              alarm decision logic (IDF-free, host-tested) + its tick
 ├── tools/                  the Apps Script sink for the Sheet
 └── tests/host/             Catch2 unit tests, no IDF
 ```
@@ -745,7 +814,7 @@ returns.
 
 ## Status
 
-**Everything through the cloud milestone is built. Alerts and power are what's left.**
+**Everything through the alerts milestone is built. Power is what's left.**
 
 | | |
 |---|---|
@@ -762,7 +831,8 @@ returns.
 | ✅ Built | the captive portal, the always-on config form, mDNS, and the Network screen |
 | ✅ Built | the Configure page — a QR that joins the setup AP, closing it on the way out |
 | ✅ Built | the form trimmed to network + identity; thresholds in tenths, hold-to-repeat, debounced writes |
-| ⬜️ Not started | alerts (the state machine's wiring and visuals), power |
+| ✅ Built | alerts — the state machine driven at the sample cadence, the alarm panel with Snooze / Off, the tone in bursts |
+| ⬜️ Not started | power |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
 power. Each step ends at something flashable and observable. (Sensor jumped
@@ -772,8 +842,8 @@ more than an input device nothing yet listens to.)
 `recorder` was not in the original plan as its own step. It landed with the main
 screen because a chart needs a source: nothing was writing a `TempRecord` on the
 settings interval, so the graph had no history to draw and none would have
-survived a reboot. Making it one component with one job also gives M7's alarm
-state machine and M9's RTC-memory mirror an obvious place to attach.
+survived a reboot. Making it one component with one job also gave the alarm's
+sampling cadence and M9's RTC-memory mirror an obvious place to attach.
 
 ### Open questions
 
@@ -804,8 +874,10 @@ state machine and M9's RTC-memory mirror an obvious place to attach.
   the maximum, a cold drink or canned air to breach the minimum. That makes the
   alarm path, the record flags and the graph's envelope testable in seconds instead
   of needing a tank. It follows that a device sitting on a desk will alarm, which is
-  the intent of these numbers rather than a bug; 15–30 °C is the sane generic band
-  to go back to once the alarms are proven.
+  the intent of these numbers rather than a bug — though now that the alarm is wired
+  it also *beeps* on a desk, so a bench session generally starts with either Off or
+  the Sound page's mute. 15–30 °C is the sane generic band to go back to once the
+  alarms are proven.
 - **Time zone.** The displayed clock renders in a compile-time POSIX zone string in
   [`ui_chrome.cpp`](components/ui/ui_chrome.cpp) — currently espressopost's, since
   the two share a bench. It belongs in `settings`, delivered the way every other

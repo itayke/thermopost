@@ -39,7 +39,8 @@ Thresholds sanitize(Thresholds t) {
   return t;
 }
 
-Status step(Status prev, int16_t temp_c100, bool valid, const Thresholds& raw) {
+Status step(Status prev, int16_t temp_c100, bool valid, const Thresholds& raw,
+            int64_t now_ms) {
   const Thresholds t = sanitize(raw);
 
   State next;
@@ -61,20 +62,40 @@ Status step(Status prev, int16_t temp_c100, bool valid, const Thresholds& raw) {
     next = classify(temp_c100, t);
   }
 
-  // An acknowledgement silences one episode, not the alarm generally. Any change
-  // of state ends that episode, so the ack is dropped and the next excursion
-  // sounds again.
-  return Status{next, prev.acked && next == prev.state};
+  // Both silences belong to one episode, not to the alarm generally. Any change
+  // of state ends that episode, so they are dropped and the next excursion says
+  // so again.
+  const bool same_episode = next == prev.state;
+
+  Status out;
+  out.state = next;
+  out.acked = prev.acked && same_episode;
+  // One comparison covers both ways a snooze stops applying: an expired deadline
+  // and a never-set one (zero, which no monotonic `now` is ever below).
+  out.snooze_until_ms =
+      (same_episode && now_ms < prev.snooze_until_ms) ? prev.snooze_until_ms : 0;
+  return out;
 }
 
 Status acknowledge(Status s) {
   if (s.state == State::Normal) return s;
   s.acked = true;
+  // See the header: the stronger silence absorbs the weaker one rather than
+  // sitting on top of a deadline nobody can see.
+  s.snooze_until_ms = 0;
+  return s;
+}
+
+Status snooze(Status s, int64_t now_ms, int64_t for_ms) {
+  if (s.state == State::Normal) return s;
+  s.snooze_until_ms = now_ms + for_ms;
   return s;
 }
 
 bool is_alarm(State s) { return s != State::Normal; }
 
-bool should_sound(Status s) { return is_alarm(s.state) && !s.acked; }
+bool should_alert(Status s) {
+  return is_alarm(s.state) && !s.acked && s.snooze_until_ms == 0;
+}
 
 }  // namespace thermopost::alert

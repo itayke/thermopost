@@ -3,16 +3,19 @@
 #include <cstdint>
 
 // Alarm decision logic — when a reading counts as out-of-band, when it counts as
-// recovered, and when the speaker should actually make noise.
+// recovered, and when the device should actually be shouting about it.
 //
 // **This file and alert_logic.cpp contain NO ESP-IDF dependency, by design.**
 // They are compiled by the host test build (tests/host/) so this logic has a
 // millisecond feedback loop instead of a flash-and-squint one. If a change here
-// ever needs an IDF header, the change belongs in alert.cpp (the wrapper that
-// drives LVGL and the codec) instead.
+// ever needs an IDF header, the change belongs in alert.cpp (the runtime wrapper
+// that owns the tick, the speaker and the shared state) instead.
 //
 // Temperatures are in hundredths of a degree Celsius throughout, matching
-// storage::TempRecord::temp_c100, so nothing here rounds or converts.
+// storage::TempRecord::temp_c100, so nothing here rounds or converts. Times are
+// milliseconds on a monotonic clock — int64 rather than uint32 because a tank
+// monitor outlives the 49 days a millisecond counter fits in 32 bits, and an
+// alarm that mis-fires on the seventh week is the worst kind of bug to be handed.
 namespace thermopost::alert {
 
 enum class State : uint8_t {
@@ -33,17 +36,31 @@ struct Thresholds {
   int16_t hysteresis_c100;
 };
 
-// Alarm state plus whether the user has silenced the current episode.
+// Alarm state plus the two ways the user can silence it, which are the two
+// buttons on the main screen's alarm panel:
+//
+//   Off    — acknowledge(). Done with this excursion; stay quiet until the
+//            temperature comes back or goes the other way.
+//   Snooze — snooze(). Quiet for a fixed span, then say it again if it is still
+//            wrong. The one to press when you are already dealing with it.
+//
+// Both are scoped to the current episode: any change of state clears them, so a
+// *new* excursion always re-alerts however the last one was dismissed.
 struct Status {
   State state;
-  // Set by acknowledge(); cleared automatically whenever `state` changes, so a
-  // *new* excursion always re-alerts even if the previous one was silenced.
+  // Set by acknowledge().
   bool  acked;
+  // Monotonic instant the snooze expires; 0 when not snoozed. Cleared by step()
+  // once that instant passes rather than compared against the clock on every
+  // read, which is what keeps should_alert() below free of a clock argument —
+  // and means the expiry lands on the next tick, up to one tick late.
+  int64_t snooze_until_ms;
 };
 
-inline constexpr Status kInitialStatus = {State::Normal, false};
+inline constexpr Status kInitialStatus = {State::Normal, false, 0};
 
-// Advance the alarm state by one reading.
+// Advance the alarm state by one reading. `now_ms` is a monotonic millisecond
+// clock, used only to expire a snooze.
 //
 // `valid` is false when the sample failed; the reading is then ignored and the
 // state becomes Fault. A Fault does not "latch" — the next valid reading is
@@ -55,17 +72,32 @@ inline constexpr Status kInitialStatus = {State::Normal, false};
 // `hysteresis_c100`. A reading can also go straight from High to Low (or back)
 // without passing through Normal — a step that large is real and should re-alert
 // rather than be smoothed over.
-Status step(Status prev, int16_t temp_c100, bool valid, const Thresholds& t);
+Status step(Status prev, int16_t temp_c100, bool valid, const Thresholds& t,
+            int64_t now_ms);
 
-// Silence the audible alert for the current episode. A no-op while Normal —
+// Silence the current episode for good — the "Off" button. A no-op while Normal:
 // there is nothing to acknowledge, and pre-acking the next excursion would
-// defeat the point of the alarm.
+// defeat the only job the alarm has. Also drops any snooze, since acknowledging
+// is the stronger of the two and leaving a deadline behind it would mean the
+// alarm had two reasons to be quiet and only one of them visible.
 Status acknowledge(Status s);
 
-// Should the speaker be sounding right now?
-bool should_sound(Status s);
+// Silence the current episode for `for_ms` — the "Snooze" button. A no-op while
+// Normal, for the same reason. A snooze that outlives its episode is not carried
+// over: step() drops it the moment the state changes.
+Status snooze(Status s, int64_t now_ms, int64_t for_ms);
 
-// Is this state one the UI should render as an alarm (tint, banner)? True for
+// Is the alarm live and unsilenced right now?
+//
+// The one predicate behind both outputs: the panel on the main screen is up
+// exactly when this is true, and the speaker sounds exactly when this is true
+// *and* the user has not muted alarms in settings. The mute is applied by the
+// caller rather than folded in here — a muted post still has to show the alarm,
+// and a state machine that knew about the volume control would have to be asked
+// twice to get two different answers.
+bool should_alert(Status s);
+
+// Is this state one the UI should render as an alarm (tint, panel)? True for
 // Fault as well as High/Low: a sensor that stopped answering is a condition the
 // user needs to see, not a silent blank on the graph.
 bool is_alarm(State s);

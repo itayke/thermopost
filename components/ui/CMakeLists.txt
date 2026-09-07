@@ -13,7 +13,7 @@ idf_component_register(
     PRIV_INCLUDE_DIRS
         "../../main"    # board_pins.hpp, for the panel resolution the layout derives from
     PRIV_REQUIRES
-        alert           # thresholds, for the band lines and the readout tint
+        alert           # thresholds for the band lines; the alarm state and its two buttons
         audio           # the Sound page's alarm test
         cloud           # the Network page: link state, addresses, sync
         cloud           # the status strip's uploaded counter

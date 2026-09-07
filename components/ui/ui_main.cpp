@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "alert.hpp"
 #include "alert_logic.hpp"
 #include "cloud.hpp"
 #include "display.hpp"
@@ -130,6 +131,58 @@ constexpr int32_t kRangeMarginC100 = 50;   // 0.5 °C of headroom above and belo
 constexpr int32_t kRangeMinSpanC100 = 200; // 2 °C — a dead-flat trace shouldn't
                                            // fill the plot and read as noise
 
+// --- Alarm overlay ----------------------------------------------------------
+// A panel that floats over the top of the chart, immediately under the readout:
+// the number and the reason it is the wrong number read as one block, and the
+// graph stays visible underneath rather than being replaced by the alarm. It is
+// deliberately not full-screen — a post that hides its own temperature the moment
+// the temperature matters is the wrong instinct, however loud the alarm.
+//
+// It cannot reach the readout above it either, which is what keeps the
+// tap-to-swap-units target clear of the Snooze button by the width of the chart's
+// top border plus the inset.
+constexpr int32_t kAlarmInset = 12;  // in from the chart's own edges, all round
+constexpr int32_t kAlarmX = kChartX + kAlarmInset;
+constexpr int32_t kAlarmY = kChartY + kAlarmInset;
+constexpr int32_t kAlarmW = kChartW - 2 * kAlarmInset;
+constexpr int32_t kAlarmPad = 10;
+constexpr int32_t kAlarmRowGap = 8;
+constexpr int32_t kAlarmBorderPx = 2;
+constexpr int32_t kAlarmRadius = 8;
+// Children are positioned inside the content area, which the border insets — the
+// same relationship the chart's kPlotW/kPlotH already spell out. So the panel's
+// own height carries the border twice and nothing below has to subtract it.
+constexpr int32_t kAlarmContentW = kAlarmW - 2 * kAlarmBorderPx;
+constexpr int32_t kAlarmH = 2 * kAlarmBorderPx + kAlarmPad + kFontTitleH +
+                            kAlarmRowGap + kPillH + kAlarmPad;
+static_assert(kAlarmY + kAlarmH <= kChartY + kChartH,
+              "the alarm overlay hangs off the bottom of the chart");
+
+// Two buttons side by side, gutter derived exactly as the menu's grid derives its
+// own and for the same reason: adjacent hit areas that meet in the gap belong to
+// whichever control was built last, and here that would be Snooze swallowing taps
+// meant for Off. kAlarmSeam is the dead strip left deliberately between them.
+constexpr int32_t kAlarmBtnExtClick = ext_click_for(kPillH, kPillH);
+constexpr int32_t kAlarmSeam = 2;
+constexpr int32_t kAlarmBtnGap = 2 * kAlarmBtnExtClick + kAlarmSeam;
+constexpr int32_t kAlarmBtnW = (kAlarmContentW - 2 * kAlarmPad - kAlarmBtnGap) / 2;
+static_assert(kAlarmBtnW > kPillH,
+              "a button taller than it is wide takes its hit margin from the width, "
+              "which kAlarmBtnExtClick above assumes it never does");
+constexpr int32_t kAlarmBtnY = kAlarmPad + kFontTitleH + kAlarmRowGap;
+
+// Said the way someone across the room reads it, not the way the state machine
+// spells it. Fault gets a line of its own rather than being folded into one of
+// the other two: "no reading" is a different problem from a wrong reading, and
+// the fix is at the other end of the flying lead.
+constexpr const char* kAlarmHigh  = "TOO HOT";
+constexpr const char* kAlarmLow   = "TOO COLD";
+constexpr const char* kAlarmFault = "NO READING";
+constexpr const char* kAlarmOff   = "Off";
+// Labelled with the number it acts on, from alert::snooze_minutes() — a button
+// that hides how long it lasts has to be learned once and remembered after.
+constexpr const char* kAlarmSnoozeFmt = "Snooze %lum";
+
 // Just the hour and minute: the column under the pill is 64 px wide, and the date
 // is on the menu screen, which has the room for it.
 constexpr const char* kClockFmt = "%H:%M";
@@ -153,6 +206,8 @@ lv_obj_t* s_axis_right  = nullptr;
 lv_obj_t* s_name_lbl    = nullptr;
 lv_obj_t* s_counter_lbl = nullptr;
 lv_obj_t* s_clock_lbl   = nullptr;
+lv_obj_t* s_alarm_panel = nullptr;
+lv_obj_t* s_alarm_title = nullptr;
 lv_obj_t* s_group       = nullptr;
 NavPill   s_nav         = {};
 // Mean plus the min/max envelope. Three series rather than one because a record is
@@ -189,11 +244,29 @@ void refresh(lv_timer_t*);
 
 // --- helpers ---------------------------------------------------------------
 
-lv_color_t reading_color(const sensor::Reading& r, const alert::Thresholds& t) {
-  if (!r.valid) return kColorFault;
-  if (r.temp_c100 > t.max_c100) return kColorHigh;
-  if (r.temp_c100 < t.min_c100) return kColorLow;
-  return kColorText;
+// The one colour the whole screen's alarm state is painted in — the readout, the
+// overlay's border, its title.
+//
+// Taken from the state machine rather than recomputed from the reading and the
+// band, which is what this used to do. The difference is hysteresis: a bare
+// compare re-decides on every sample, so a temperature sitting on the limit
+// flickers the readout between two colours several times a minute while the alarm
+// itself, which has a recovery margin, is not changing its mind at all.
+lv_color_t state_color(alert::State s) {
+  switch (s) {
+    case alert::State::High:  return kColorHigh;
+    case alert::State::Low:   return kColorLow;
+    case alert::State::Fault: return kColorFault;
+    default:                  return kColorText;
+  }
+}
+
+const char* alarm_title(alert::State s) {
+  switch (s) {
+    case alert::State::Low:   return kAlarmLow;
+    case alert::State::Fault: return kAlarmFault;
+    default:                  return kAlarmHigh;
+  }
 }
 
 // Map a c100 value onto a pixel row inside the plot, y growing downwards.
@@ -315,9 +388,24 @@ void refresh(lv_timer_t* timer) {
   // when the sensor is unplugged.
   lv_label_set_text(s_unit_lbl, settings::unit_suffix());
 
-  const lv_color_t tint = reading_color(r, t);
+  // --- the alarm, which colours the number as well as raising the panel
+  const alert::Status alarm = alert::status();
+  const lv_color_t tint = state_color(alarm.state);
   lv_obj_set_style_text_color(s_value_lbl, tint, LV_PART_MAIN);
   lv_obj_set_style_text_color(s_unit_lbl, tint, LV_PART_MAIN);
+
+  // The panel is up exactly while the alarm is live and unsilenced, so Snooze and
+  // Off close it by the same predicate that quiets the speaker. The tint is not
+  // part of that: a silenced alarm is still an alarm, and the number goes on
+  // saying so after the panel has been dismissed.
+  if (alert::should_alert(alarm)) {
+    lv_label_set_text(s_alarm_title, alarm_title(alarm.state));
+    lv_obj_set_style_text_color(s_alarm_title, tint, LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_alarm_panel, tint, LV_PART_MAIN);
+    lv_obj_remove_flag(s_alarm_panel, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(s_alarm_panel, LV_OBJ_FLAG_HIDDEN);
+  }
 
   // --- threshold chips. Only the numbers change; the arrows are fixed.
   std::snprintf(text, sizeof(text), "%.1f",
@@ -385,6 +473,22 @@ void value_clicked(lv_event_t*) {
 }
 
 void menu_clicked(lv_event_t*) { nav::go(nav::Screen::Menu); }
+
+// Both repaint immediately rather than waiting out kRefreshMs. The tone stops
+// inside alert's own call, so a panel that lingered a quarter of a second after
+// the speaker went quiet would read as a button that half-worked.
+void alarm_snooze_clicked(lv_event_t*) {
+  alert::snooze();
+  refresh(nullptr);
+  ESP_LOGI(kTag, "alarm snoozed for %lu min",
+           static_cast<unsigned long>(alert::snooze_minutes()));
+}
+
+void alarm_off_clicked(lv_event_t*) {
+  alert::silence();
+  refresh(nullptr);
+  ESP_LOGI(kTag, "alarm silenced until the reading changes");
+}
 
 // --- construction ----------------------------------------------------------
 
@@ -498,11 +602,53 @@ void build_top_band(lv_obj_t* scr) {
   lv_obj_set_pos(s_min_num, kChipNumX, kChipY + kChipSpacing);
 }
 
+// Built after the chart so it is the later sibling and therefore draws on top —
+// LVGL's z-order among siblings is creation order, and an overlay created first
+// would be a panel hidden behind the graph it is meant to cover.
+//
+// Comes up hidden. refresh() is the only thing that shows it, so there is exactly
+// one place that decides whether an alarm is on screen.
+void build_alarm_panel(lv_obj_t* parent) {
+  s_alarm_panel = lv_obj_create(parent);
+  lv_obj_set_size(s_alarm_panel, kAlarmW, kAlarmH);
+  lv_obj_set_pos(s_alarm_panel, kAlarmX, kAlarmY);
+  lv_obj_set_style_bg_color(s_alarm_panel, kColorPanel, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(s_alarm_panel, LV_OPA_COVER, LV_PART_MAIN);
+  // The border is the state's colour and is set in refresh(); only its width and
+  // the corner are fixed here.
+  lv_obj_set_style_border_width(s_alarm_panel, kAlarmBorderPx, LV_PART_MAIN);
+  lv_obj_set_style_radius(s_alarm_panel, kAlarmRadius, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(s_alarm_panel, 0, LV_PART_MAIN);
+  lv_obj_remove_flag(s_alarm_panel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(s_alarm_panel, LV_OBJ_FLAG_HIDDEN);
+
+  s_alarm_title = make_boxed_label(s_alarm_panel, kFontTitle, kColorText,
+                                   kAlarmContentW, LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_pos(s_alarm_title, 0, kAlarmPad);
+
+  // Snooze on the left, Off on the right: left to right is least committal to
+  // most, and the one that ends the alarm for good should not be the one a thumb
+  // reaches first.
+  char snooze[kTextMax];
+  std::snprintf(snooze, sizeof(snooze), kAlarmSnoozeFmt,
+                static_cast<unsigned long>(alert::snooze_minutes()));
+  lv_obj_t* snooze_btn =
+      build_pill(s_alarm_panel, snooze, kAlarmBtnW, kPillH, kColorMenu, kFontTitle,
+                 alarm_snooze_clicked, nullptr);
+  lv_obj_set_pos(snooze_btn, kAlarmPad, kAlarmBtnY);
+
+  lv_obj_t* off_btn =
+      build_pill(s_alarm_panel, kAlarmOff, kAlarmBtnW, kPillH, kColorText, kFontTitle,
+                 alarm_off_clicked, nullptr);
+  lv_obj_set_pos(off_btn, kAlarmPad + kAlarmBtnW + kAlarmBtnGap, kAlarmBtnY);
+}
+
 void build_screen(lv_obj_t* scr) {
   s_group = build_group(scr);
 
   build_top_band(s_group);
   build_chart(s_group);
+  build_alarm_panel(s_group);
 
   // --- time captions
   s_axis_left = make_label(s_group, kFontBody, kColorMuted, "");
@@ -536,6 +682,11 @@ void build_screen(lv_obj_t* scr) {
   fade[n++] = s_min_arrow;
   fade[n++] = s_min_num;
   fade[n++] = s_chart;
+  // The panel alone: LV_STYLE_OPA applies to an object together with its children,
+  // so its title and both buttons fade with it. Fading a hidden object is a no-op
+  // that costs one animation, which is cheaper than teaching the nav engine about
+  // widgets that come and go.
+  fade[n++] = s_alarm_panel;
   fade[n++] = s_axis_left;
   fade[n++] = s_axis_mid;
   fade[n++] = s_axis_right;

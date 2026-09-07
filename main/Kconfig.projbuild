@@ -75,4 +75,20 @@ config THERMOPOST_AUDIO_DEBUG
         that mattered enough to find this board's three wrong pin facts, and will
         matter again on the next board revision.
 
+# --- Alarm ------------------------------------------------------------------
+
+config THERMOPOST_ALERT_SNOOZE_MINUTES
+    int "How long the alarm's Snooze button silences it, in minutes"
+    default 5
+    range 1 240
+    help
+        Snooze quiets the alarm — panel and tone — and lets it come back if the
+        temperature is still outside the band when the time is up. The other
+        button, Off, is the one that stays quiet until the reading changes what
+        it is doing.
+
+        Five minutes is a walk to the tank and back. The right number depends on
+        how far away the tank is: long enough to be doing something about it,
+        short enough that walking away instead is not the same as switching the
+        alarm off.
 endmenu
