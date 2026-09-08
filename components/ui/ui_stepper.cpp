@@ -75,10 +75,17 @@ void stepper_pressed(lv_event_t*) { s_held_repeats = 0; }
 
 // One filled disc with a centred glyph. Same capsule as every other button here —
 // a circle is just a capsule whose radius is half its side.
+// The FontAwesome +/- glyphs do not fill their em box symmetrically, so a label
+// centred on its own bounding box reads a pixel high inside a circle. Nudged here
+// rather than in build_pill, because this is a property of these two glyphs and not
+// of every capsule's text — the discs themselves do not move.
+constexpr int32_t kGlyphNudgeY = 1;
+
 lv_obj_t* build_disc(lv_obj_t* parent, const char* glyph, int32_t diam,
                      lv_event_cb_t cb, lv_event_cb_t hold_cb, StepperState* st) {
   lv_obj_t* d = build_pill(parent, glyph, diam, diam, kColorStepper,
                            kFontTitle, cb, st);
+  lv_obj_align(pill_label(d), LV_ALIGN_CENTER, 0, kGlyphNudgeY);
   lv_obj_add_event_cb(d, hold_cb, LV_EVENT_LONG_PRESSED_REPEAT, st);
   lv_obj_add_event_cb(d, stepper_pressed, LV_EVENT_PRESSED, st);
   return d;
