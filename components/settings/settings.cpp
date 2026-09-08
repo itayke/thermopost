@@ -20,6 +20,7 @@ constexpr const char* kKeyMin      = "lo";
 constexpr const char* kKeyMax      = "hi";
 constexpr const char* kKeyHyst     = "hy";
 constexpr const char* kKeyPoints   = "gp";
+constexpr const char* kKeyUpload   = "ue";
 constexpr const char* kKeyUnit     = "un";
 constexpr const char* kKeySound    = "sn";
 constexpr const char* kKeyVolume   = "vo";
@@ -71,6 +72,7 @@ Settings s_cur = {
     .max_c100        = kMaxDefaultC100,
     .hysteresis_c100 = kHysteresisDefaultC100,
     .graph_points    = kGraphPointsDefault,
+    .upload_every_min = kUploadEveryDefaultMin,
     .unit            = TempUnit::Fahrenheit,
     .sound_enabled   = true,
     .volume_pct      = kVolumeDefaultPct,
@@ -152,6 +154,8 @@ bool sanitize_name(const char* src, char* out, size_t out_size) {
 
 uint16_t clamp_interval(uint16_t v) { return std::clamp(v, kIntervalMinS, kIntervalMaxS); }
 uint16_t clamp_points(uint16_t v)   { return std::clamp(v, kGraphPointsMin, kGraphPointsMax); }
+// No floor: zero is a meaningful value here, not an unset one — it is "every record".
+uint16_t clamp_upload(uint16_t v)   { return v > kUploadEveryMaxMin ? kUploadEveryMaxMin : v; }
 int16_t  clamp_temp(int16_t v)      { return std::clamp(v, kTempFloorC100, kTempCeilC100); }
 uint8_t  clamp_volume(uint8_t v)    { return v > kVolumeMaxPct ? kVolumeMaxPct : v; }
 uint16_t clamp_sleep_after(uint16_t v) { return std::clamp(v, kSleepAfterMinS, kSleepAfterMaxS); }
@@ -197,6 +201,7 @@ esp_err_t init() {
   if (nvs_get_u16(h, kKeyMax, &u16) == ESP_OK) s_cur.max_c100 = clamp_temp(static_cast<int16_t>(u16));
   if (nvs_get_u16(h, kKeyHyst, &u16) == ESP_OK) s_cur.hysteresis_c100 = clamp_hysteresis(static_cast<int16_t>(u16));
   if (nvs_get_u16(h, kKeyPoints, &u16) == ESP_OK) s_cur.graph_points = clamp_points(u16);
+  if (nvs_get_u16(h, kKeyUpload, &u16) == ESP_OK) s_cur.upload_every_min = clamp_upload(u16);
   if (nvs_get_u8(h, kKeyUnit, &u8) == ESP_OK && u8 <= 1) s_cur.unit = static_cast<TempUnit>(u8);
   if (nvs_get_u8(h, kKeySound, &u8) == ESP_OK) s_cur.sound_enabled = (u8 != 0);
   if (nvs_get_u8(h, kKeyVolume, &u8) == ESP_OK) s_cur.volume_pct = clamp_volume(u8);
@@ -226,14 +231,22 @@ esp_err_t init() {
   nvs_close(h);
 
   s_inited = true;
+  char upload_text[16];
+  if (s_cur.upload_every_min == 0) {
+    std::snprintf(upload_text, sizeof(upload_text), "every record");
+  } else {
+    std::snprintf(upload_text, sizeof(upload_text), "every %umin",
+                  static_cast<unsigned>(s_cur.upload_every_min));
+  }
   ESP_LOGI(kTag, "'%s': interval %us, band %.2f..%.2f C (hyst %.2f), %u graph points, "
-                 "%s, sound %s @ %u%%",
+                 "upload %s, %s, sound %s @ %u%%",
            s_cur.name,
            static_cast<unsigned>(s_cur.interval_s),
            static_cast<double>(c100_to_c(s_cur.min_c100)),
            static_cast<double>(c100_to_c(s_cur.max_c100)),
            static_cast<double>(c100_to_c(s_cur.hysteresis_c100)),
            static_cast<unsigned>(s_cur.graph_points),
+           upload_text,
            s_cur.unit == TempUnit::Celsius ? "C" : "F",
            s_cur.sound_enabled ? "on" : "off",
            static_cast<unsigned>(s_cur.volume_pct));
@@ -276,6 +289,13 @@ esp_err_t set_graph_points(uint16_t v) {
   if (v == s_cur.graph_points) return ESP_OK;
   s_cur.graph_points = v;
   return persist<uint16_t>(kKeyPoints, v) ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t set_upload_every_min(uint16_t v) {
+  v = clamp_upload(v);
+  if (v == s_cur.upload_every_min) return ESP_OK;
+  s_cur.upload_every_min = v;
+  return persist<uint16_t>(kKeyUpload, v) ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t set_unit(TempUnit u) {

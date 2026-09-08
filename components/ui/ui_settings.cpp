@@ -19,9 +19,13 @@ namespace {
 constexpr size_t kTextMax = 64;
 // Anything format_span() writes, and no more. Formatting a kTextMax buffer into
 // another kTextMax buffer is a truncation GCC refuses outright, and the honest fix
-// is the smaller source rather than a bigger target. Wide enough for the "%luh %lum"
-// worst case the compiler has to assume, not just the ~5 characters it can produce.
-constexpr size_t kSpanTextMax = 32;
+// is the smaller source rather than a bigger target.
+//
+// Sized from the compiler's worst case rather than ours: for a uint32_t of seconds
+// the widest "%luh %lum" is "1193046h 59m", twelve characters. The Recording footer
+// formats *two* of these into one kTextMax line, which is what forced this bound to
+// be a real one — at 32 the pair no longer provably fits.
+constexpr size_t kSpanTextMax = 16;
 
 // --- Shared page geometry ---------------------------------------------------
 // Two columns, two rows. A cell is a caption with its control underneath, and the
@@ -106,6 +110,20 @@ static_assert(kIntervalChoicesS[0] >= settings::kIntervalMinS,
 static_assert(kIntervalChoicesS[kIntervalChoiceCount - 1] <= settings::kIntervalMaxS,
               "the slowest offered interval is above what settings accepts");
 
+// --- Upload cadence table ---------------------------------------------------
+// Minutes between radio sessions; the first entry is "every record", which is what
+// settings stores as zero. Same index-into-a-table trick as the interval above, and
+// for the same reason: the useful range spans two orders of magnitude.
+//
+// The top of the table is a day rather than the week the range would allow. A post
+// that has not spoken since yesterday is one someone should look at, and offering a
+// cadence that makes silence normal would hide exactly that.
+constexpr uint16_t kUploadChoicesMin[] = {0, 5, 15, 30, 60, 180, 360, 720, 1440};
+constexpr int16_t kUploadChoiceCount =
+    static_cast<int16_t>(sizeof(kUploadChoicesMin) / sizeof(kUploadChoicesMin[0]));
+static_assert(kUploadChoicesMin[kUploadChoiceCount - 1] <= settings::kUploadEveryMaxMin,
+              "the slowest offered upload cadence is above what settings accepts");
+
 constexpr uint16_t kGraphPointsStep = 30;
 constexpr uint8_t  kVolumeStepPct   = 5;
 
@@ -152,6 +170,22 @@ lv_obj_t* build_toggle_cell(lv_obj_t* group, int32_t cx, int32_t y, const char* 
                               kFontTitle, on_tap, nullptr);
   place(pill, cx, kToggleW, y + kFontBodyH + kCaptionGap + kPillBandDy);
   return pill;
+}
+
+// Nearest offered value to what is stored, so a setting written by an older
+// firmware — or by anything that does not know this table — lands on a real stepper
+// position instead of snapping to the bottom of it.
+int16_t nearest_index(const uint16_t* table, int16_t count, uint16_t want) {
+  int16_t best = 0;
+  int32_t best_err = INT32_MAX;
+  for (int16_t i = 0; i < count; ++i) {
+    const int32_t err = std::abs(static_cast<int32_t>(table[i]) - want);
+    if (err < best_err) {
+      best_err = err;
+      best = i;
+    }
+  }
+  return best;
 }
 
 void format_span(char* out, size_t n, uint32_t seconds) {
@@ -434,22 +468,7 @@ namespace recording {
 PageChrome   s_page = {};
 StepperState s_interval = {};
 StepperState s_points = {};
-
-// Nearest offered interval to what is stored, so a value written by the web form (or
-// an older firmware) lands on a real stepper position instead of snapping to the
-// bottom of the table.
-int16_t nearest_interval_index(uint16_t seconds) {
-  int16_t best = 0;
-  int32_t best_err = INT32_MAX;
-  for (int16_t i = 0; i < kIntervalChoiceCount; ++i) {
-    const int32_t err = std::abs(static_cast<int32_t>(kIntervalChoicesS[i]) - seconds);
-    if (err < best_err) {
-      best_err = err;
-      best = i;
-    }
-  }
-  return best;
-}
+StepperState s_upload = {};
 
 void format_interval(char* out, size_t n, int16_t index) {
   const int16_t i = static_cast<int16_t>(
@@ -457,13 +476,37 @@ void format_interval(char* out, size_t n, int16_t index) {
   format_span(out, n, kIntervalChoicesS[i]);
 }
 
+// Reads with its label as "Upload every record" / "Upload every 1h", which is the
+// whole sentence rather than a number needing one.
+void format_upload(char* out, size_t n, int16_t index) {
+  const int16_t i = static_cast<int16_t>(
+      std::clamp<int16_t>(index, 0, kUploadChoiceCount - 1));
+  const uint16_t minutes = kUploadChoicesMin[i];
+  if (minutes == 0) {
+    std::snprintf(out, n, "record");
+    return;
+  }
+  format_span(out, n, static_cast<uint32_t>(minutes) * kSecPerMin);
+}
+
+// Both numbers on this page are spans someone is choosing between, so the footer
+// states each as the thing it actually costs: how much history the graph holds, and
+// how stale the Sheet is allowed to get.
 void refresh_footer() {
   const settings::Settings s = settings::get();
   char span[kSpanTextMax];
   format_span(span, sizeof(span),
               static_cast<uint32_t>(s.graph_points) * s.interval_s);
   char text[kTextMax];
-  std::snprintf(text, sizeof(text), "the graph spans %s", span);
+  if (s.upload_every_min == 0) {
+    std::snprintf(text, sizeof(text), "the graph spans %s", span);
+  } else {
+    char lag[kSpanTextMax];
+    format_span(lag, sizeof(lag), static_cast<uint32_t>(s.upload_every_min) * kSecPerMin);
+    // ASCII separator: LVGL's built-in Montserrat carries 0x20-0x7F plus a handful
+    // of symbols, and a middle dot is not among them — it would draw as a blank box.
+    std::snprintf(text, sizeof(text), "graph %s, Sheet up to %s behind", span, lag);
+  }
   lv_label_set_text(s_page.footer, text);
 }
 
@@ -477,12 +520,20 @@ void on_points_change() {
   refresh_footer();
 }
 
+void on_upload_change() {
+  settings::set_upload_every_min(kUploadChoicesMin[s_upload.value]);
+  refresh_footer();
+}
+
 void load() {
   const settings::Settings s = settings::get();
-  s_interval.value = nearest_interval_index(s.interval_s);
+  s_interval.value = nearest_index(kIntervalChoicesS, kIntervalChoiceCount, s.interval_s);
   s_points.value = static_cast<int16_t>(s.graph_points);
+  s_upload.value =
+      nearest_index(kUploadChoicesMin, kUploadChoiceCount, s.upload_every_min);
   stepper_refresh(&s_interval);
   stepper_refresh(&s_points);
+  stepper_refresh(&s_upload);
   refresh_footer();
 }
 
@@ -501,6 +552,12 @@ void build(lv_obj_t* scr) {
   s_points.suffix = "";
   s_points.on_change = on_points_change;
 
+  s_upload.min = 0;
+  s_upload.max = kUploadChoiceCount - 1;
+  s_upload.step = 1;
+  s_upload.format = format_upload;
+  s_upload.on_change = on_upload_change;
+
   lv_obj_t* fade[nav::kMaxFadeWidgets];
   int n = 0;
   fade[n++] = s_page.back.btn;
@@ -512,6 +569,9 @@ void build(lv_obj_t* scr) {
   fade[n++] = cap;
   fade[n++] = build_stepper_cell(s_page.group, kColRightCx, kRow1Y, "Points plotted",
                                  &s_points, &cap);
+  fade[n++] = cap;
+  fade[n++] = build_stepper_cell(s_page.group, kColLeftCx, kRow2Y, "Upload every",
+                                 &s_upload, &cap);
   fade[n++] = cap;
 
   load();

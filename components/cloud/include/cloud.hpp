@@ -137,6 +137,11 @@ void resync();
 
 // Tell the uploader a record was just appended. Lock-free (it sets an event
 // bit), so `recorder` can call it straight from its own task.
-void notify_new_record();
+//
+// `urgent` skips settings::upload_every_min, which otherwise holds ordinary history
+// back so the radio comes up on a slow cadence rather than once a minute. Pass it
+// for a record the user would not accept hearing about an hour late — one that
+// breached the band, or one the sensor failed to produce.
+void notify_new_record(bool urgent = false);
 
 }  // namespace thermopost::cloud

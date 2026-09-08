@@ -55,6 +55,27 @@ constexpr uint16_t kGraphPointsMin = 30;
 constexpr uint16_t kGraphPointsMax = 480;
 constexpr uint16_t kGraphPointsDefault = 120;
 
+// How long records may queue before the radio comes up to send them.
+//
+// Minutes rather than a record count, deliberately. A count would mean a different
+// span on every post in a fleet, because the span is count x interval_s: "every 60
+// records" is an hour at the default cadence and two and a half days at the slowest
+// one. Minutes are what the setting is actually about.
+//
+// Zero is "send every record" — today's behaviour and the right default on mains,
+// where a radio session costs nothing worth saving. It earns its keep on battery,
+// where associating and completing a TLS handshake is the most expensive thing the
+// post does; the cost is per session rather than per POST, so an hourly drain is
+// roughly a twelfth of the radio time of a five-minute one and cloud.cpp's
+// kBatchSize is already one hour of history per request.
+//
+// A record that breached the band or failed to read ignores this and goes at once.
+// A saving that also delayed the alarm would be the one worth refusing.
+constexpr uint16_t kUploadEveryDefaultMin = 0;
+// A day. Longer is a Sheet nobody would trust to be current, and the backlog is
+// safe on flash either way.
+constexpr uint16_t kUploadEveryMaxMin = 1440;
+
 // A deliberately tight band straddling room temperature, so both directions are
 // reachable on a desk: cup the sensor in a hand to breach the maximum, and a cold
 // drink or a puff of canned air breaches the minimum. That makes the alarm path,
@@ -110,6 +131,7 @@ struct Settings {
   int16_t  max_c100;         // alarm above this
   int16_t  hysteresis_c100;  // recovery margin; see alert_logic.hpp
   uint16_t graph_points;     // samples plotted on the timeline
+  uint16_t upload_every_min; // 0 = send every record; see kUploadEveryDefaultMin
   TempUnit unit;             // display only — never affects stored values
   bool     sound_enabled;    // master mute for the alarm tone
   uint8_t  volume_pct;       // 0..100
@@ -136,6 +158,7 @@ esp_err_t set_interval_s(uint16_t v);
 esp_err_t set_band(int16_t min_c100, int16_t max_c100);
 esp_err_t set_hysteresis_c100(int16_t v);
 esp_err_t set_graph_points(uint16_t v);
+esp_err_t set_upload_every_min(uint16_t v);
 esp_err_t set_unit(TempUnit u);
 esp_err_t set_sound_enabled(bool on);
 esp_err_t set_volume_pct(uint8_t pct);

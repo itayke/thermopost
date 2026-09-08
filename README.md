@@ -581,7 +581,7 @@ rather than sitting flush left with a hole beside it.
 | page | controls | footer says |
 |---|---|---|
 | Temperature | alarm below, alarm above, recovery margin, **unit** | the exact stored hundredths |
-| Recording | interval, points plotted | the time span the graph covers |
+| Recording | interval, points plotted, **upload every** | the graph's span, and how stale the Sheet may get |
 | Sound | alarm sound on/off, volume, **test alarm** | whether alarms will be audible |
 | Power | mode, sleep delay, **battery volts** | what this mode actually does, or that sleep is not armed |
 | Network | Configure, Forget; link, address and sync status above | where the name and Sheet URL are edited |
@@ -865,6 +865,30 @@ network returns, which is why the reconnect policy can afford to be patient. The
 mark only advances on a confirmed `"ok":true`, so a response lost in transit
 costs a repeated batch rather than a hole in the history.
 
+**How often the radio comes up is a setting, because it is the biggest power
+decision the post makes.** `Upload every` on the Recording page is the floor: at its
+default, *every record*, the post uploads a minute after it wakes up and every minute
+after that, which is right on a bench and wrong on a battery. Association, DHCP and a
+TLS handshake cost far more than taking a reading — the expense is per *session*, not
+per POST, since the drain loop keeps sending batches until the queue is empty once the
+link is up. So an hourly cadence costs roughly a twelfth of the radio time of a
+five-minute one, and `kBatchSize` is already one hour of history per request.
+
+Two details make the setting behave:
+
+- **It is minutes, not a record count.** A count would mean something different on
+  every post in a fleet, because the span is count × interval — "every 60 records" is
+  an hour at the default cadence and two and a half days at the slowest one.
+- **A flagged record ignores it entirely.** A record that breached the band, or that
+  the sensor failed to produce, is uploaded the moment it is written. A saving that
+  also delayed the alarm would be the one saving not worth making.
+
+The deadline advances from the previous deadline rather than from when a drain
+finished, so the seconds an association and a handshake take don't accumulate until a
+whole cadence has been swallowed. And nothing here runs on a clock: the cadence is a
+floor checked when a record lands, which is the shape a post that sleeps between
+records will need, because a sleeping post has no clock to run.
+
 **The dedupe key is `device` + `index`, and that is a fleet decision.** Each post
 numbers its records from zero, so an index alone collides across a group on the
 first day. The post's *name* can't be the key either — it is renameable from the
@@ -966,6 +990,16 @@ gives a round 1024-character line, and base64 only concatenates on 3-byte
 boundaries. The header carries the stride alongside the width, so a change to
 `CONFIG_LV_DRAW_BUF_STRIDE_ALIGN` cannot silently shear the image.
 
+A capture takes about 3 seconds, and two things had to be true for that. `shot`
+waits for the USB TX FIFO to drain before it returns: a frame is ~200 KB, and
+returning into the REPL with that still queued means its prompt goes into a full
+FIFO and is dropped, after which the console ignores typed commands for ten to
+fifteen seconds. And the REPL task gets an 8 KB stack rather than esp_console's
+default 4 KB, because a snapshot recurses through the whole widget tree — at the
+default it is not a slow capture but a stack-overflow panic and a reboot the
+moment the command is typed. Both are worth knowing before adding any other
+console command that does real work.
+
 ## Host tests
 
 Two pieces are IDF-free by design and run on the dev machine: the alarm decision
@@ -1056,6 +1090,7 @@ returns.
 | ✅ Verified | `audio` — ES8311 over I²S, beeping alarm tone out of the speaker, driven from the Sound page's test button |
 | ✅ Built | `cloud` + `shell` — Wi-Fi with unbounded backoff, SNTP clock, `cloud` serial command |
 | ✅ Built | the upload queue — batched POSTs to Apps Script, NVS high-water mark, host-tested JSON |
+| ✅ Built | the upload cadence — a floor on how often the radio comes up, bypassed by a flagged record |
 | ✅ Built | the captive portal, the always-on config form, mDNS, and the Network screen |
 | ✅ Built | the Configure page — a QR that joins the setup AP, closing it on the way out |
 | ✅ Built | the form trimmed to network + identity; thresholds in tenths, hold-to-repeat, debounced writes |

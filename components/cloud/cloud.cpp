@@ -70,6 +70,14 @@ constexpr const char* kDefaultToken = "Thermo Post (c) 2026 Itay Keren";
 // of seventy.
 constexpr size_t kBatchSize = 60;
 
+// --- Upload cadence ---------------------------------------------------------
+// settings::upload_every_min is a floor on how often the radio comes up, not a
+// timer of its own: nothing here wakes on a clock, so the effective cadence is the
+// first record to land on or after the deadline. That is the right shape for a post
+// that will eventually be asleep between records — there is no clock to run.
+constexpr int64_t kUsPerMs  = 1000;
+constexpr int64_t kMsPerMin = 60'000;
+
 constexpr uint32_t   kSyncTaskStack = 12288;  // the mbedTLS handshake needs the headroom
 constexpr UBaseType_t kSyncTaskPrio = 3;      // same as the sampler
 constexpr BaseType_t  kSyncTaskCore = 0;      // off the LVGL core (1)
@@ -94,6 +102,8 @@ constexpr size_t kRespCapBytes = 256;
 constexpr EventBits_t kBitGotIp     = 1u << 0;
 constexpr EventBits_t kBitNewRecord = 1u << 1;
 constexpr EventBits_t kBitReconnect = 1u << 2;  // the backoff timer came due
+// A record the cadence below is not allowed to hold back — see notify_new_record().
+constexpr EventBits_t kBitUrgent    = 1u << 3;
 
 // --- mDNS -------------------------------------------------------------------
 // What makes a fleet usable: a laptop walks every post by name instead of
@@ -155,6 +165,12 @@ char      s_url[kUrlMax]     = {};
 char      s_token[kTokenMax] = {};
 uint32_t  s_hwm        = 0;       // absolute index of the next record to upload
 esp_err_t s_last_error = ESP_OK;
+
+// When the queue may next drain. Zero so the first record after boot goes at once,
+// whatever the cadence — a post that has just come up should prove it can reach the
+// Sheet rather than sitting on that question for an hour. Read and written only by
+// the sync task, so it needs no lock.
+int64_t   s_next_upload_ms = 0;
 
 // The dedupe key the Sheet groups on: this board's MAC as lowercase hex. Read
 // from efuse once at init — stable for the life of the hardware, and unlike the
@@ -535,13 +551,43 @@ BatchResult upload_batch() {
   return BatchResult::Ok;
 }
 
+int64_t now_ms() { return esp_timer_get_time() / kUsPerMs; }
+
+bool upload_due() {
+  const uint16_t cadence_min = settings::get().upload_every_min;
+  if (cadence_min == 0) return true;
+  const int64_t now = now_ms();
+  const int64_t cadence_ms = static_cast<int64_t>(cadence_min) * kMsPerMin;
+  // Pulls a pending deadline in when the cadence is shortened from the menu, so the
+  // edit applies now rather than after the old, longer one runs out — the same
+  // promptness `recorder` gives an edited interval. Lengthening is left alone: the
+  // next drain is what pushes the deadline out.
+  if (s_next_upload_ms > now + cadence_ms) s_next_upload_ms = now + cadence_ms;
+  return now >= s_next_upload_ms;
+}
+
+// Advanced from the previous deadline, not from the moment the drain finished.
+// Stamping it from the end would push every cycle later by however long the
+// association and the handshake took, until a whole cadence had been swallowed. A
+// deadline already in the past — a post that spent the night offline — is resynced
+// to now instead of being caught up one cadence at a time.
+void advance_upload_deadline() {
+  const uint16_t cadence_min = settings::get().upload_every_min;
+  if (cadence_min == 0) { s_next_upload_ms = 0; return; }
+  const int64_t cadence_ms = static_cast<int64_t>(cadence_min) * kMsPerMin;
+  const int64_t now = now_ms();
+  s_next_upload_ms += cadence_ms;
+  if (s_next_upload_ms <= now) s_next_upload_ms = now + cadence_ms;
+}
+
 void sync_task(void* /*arg*/) {
   ESP_LOGI(kTag, "sync task started (stack %u, core %d)",
            static_cast<unsigned>(kSyncTaskStack), static_cast<int>(kSyncTaskCore));
   uint32_t backoff = kBackoffMinMs;
   for (;;) {
     const EventBits_t bits =
-        xEventGroupWaitBits(s_events, kBitGotIp | kBitNewRecord | kBitReconnect,
+        xEventGroupWaitBits(s_events,
+                            kBitGotIp | kBitNewRecord | kBitReconnect | kBitUrgent,
                             /*clear=*/pdTRUE, /*waitAll=*/pdFALSE, portMAX_DELAY);
 
     // The backoff timer came due. Done here rather than in the timer callback
@@ -555,6 +601,15 @@ void sync_task(void* /*arg*/) {
       }
     }
 
+    // Hold the queue back until the cadence says the radio may come up. After the
+    // reconnect above, deliberately: a post whose link is down still gets its retry
+    // on schedule, because a cadence that also gated reconnecting would leave a post
+    // that dropped its Wi-Fi offline until the next drain was due.
+    //
+    // Nothing is lost by returning to the wait — the bits are cleared, but the next
+    // record sets them again, and records are what this cadence is measured in.
+    if ((bits & kBitUrgent) == 0 && !upload_due()) continue;
+
     // Drain everything above the mark, then go back to waiting. Both exits are
     // deliberate: up-to-date means there is nothing to do until something
     // happens, and a lost link or a cleared endpoint means there is nowhere to
@@ -567,6 +622,10 @@ void sync_task(void* /*arg*/) {
       if (r == BatchResult::UpToDate) {
         set_sync_state(SyncState::Idle);
         backoff = kBackoffMinMs;
+        // Only here, where the queue is genuinely empty. A drain that ended because
+        // the link dropped leaves the deadline in the past on purpose, so the next
+        // wake retries instead of waiting out another cadence.
+        advance_upload_deadline();
         break;
       }
       set_sync_state(SyncState::Backoff);
@@ -1046,12 +1105,13 @@ void resync() {
   const uint32_t first = storage::first_index();
   { Lock l; s_hwm = first; s_last_error = ESP_OK; }
   persist_hwm(first);
-  notify_new_record();
+  notify_new_record(/*urgent=*/true);
   ESP_LOGI(kTag, "hwm rewound to %lu", static_cast<unsigned long>(first));
 }
 
-void notify_new_record() {
-  if (s_events != nullptr) xEventGroupSetBits(s_events, kBitNewRecord);
+void notify_new_record(bool urgent) {
+  if (s_events == nullptr) return;
+  xEventGroupSetBits(s_events, urgent ? (kBitNewRecord | kBitUrgent) : kBitNewRecord);
 }
 
 }  // namespace thermopost::cloud

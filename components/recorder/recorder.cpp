@@ -198,7 +198,10 @@ void write_one() {
   // there is now a record on disk for the uploader to find. A failed append has
   // nothing to offer it, and waking it to discover that would spend a TLS
   // handshake on a no-op.
-  cloud::notify_new_record();
+  // Urgent for any flagged record — a breach of the band, or a sensor that produced
+  // nothing. Ordinary history can wait for the upload cadence; neither of these can,
+  // and both are exactly what someone watching the Sheet is watching it for.
+  cloud::notify_new_record(rec.flags != 0);
 
   // Only now, because this counter is shown on screen as the answer to "is it
   // still recording?". Incrementing it before the append would make it climb
