@@ -10,8 +10,9 @@ By Itay Keren <itay@untame.com>. Copyright (c) 2026 Itay Keren.
 
 > **Working, and not finished.** Everything the device does day to day is built and
 > most of it is confirmed on hardware: the screens, the settings, the alarm, the
-> Sheet upload, the idle ladder and battery sense. What is left is deep sleep,
-> gated on mirroring state through RTC memory. See [Status](#status).
+> Sheet upload, the idle ladder and battery sense. Deep sleep is wired — Turn Off
+> uses it — but the post does not yet put *itself* to sleep, which is gated on
+> mirroring state through RTC memory. See [Status](#status).
 
 ## Hardware
 
@@ -389,7 +390,7 @@ recorder keeps writing, the alarm keeps watching. A dark post is a working post.
 | **Active** | — | Full brightness |
 | **Dim** | `THERMOPOST_POWER_DIM_SECONDS` (60) | Backlight to `THERMOPOST_POWER_DIM_PERCENT` (20%) |
 | **Dark** | `THERMOPOST_POWER_DARK_SECONDS` (180) | Panel blanked with `set_on(false)` — it stops scanning, but the framebuffer survives, so coming back is the screen that was already there rather than a repaint from nothing |
-| **Asleep** | — | Deep sleep. Deliberately unreachable; see below |
+| **Asleep** | — | Deep sleep. Reached by the *Turn Off* button, not yet by the ladder itself; see below |
 
 The main screen carries the charge as a **drawn meter at the top left**, before
 the clock, with a bolt between them when a charger is detected. Drawn rather than
@@ -426,19 +427,23 @@ and a post that beeps in the dark makes someone hunt for a device instead of
 reading it. Snooze and Off therefore pick up a second meaning for free: they are
 also what lets the screen go back down.
 
-#### Deep sleep is gated, on purpose
+#### Sleeping on idle is gated, on purpose
 
-The fourth rung is a `kDeepSleepReady = false` in
-[`power.cpp`](components/power/power.cpp) rather than code that isn't written
-yet, so the reason travels with it. One thing has to land first — the divider is
-now known, so this is the whole of what is left:
+Deep sleep itself is wired and works: **Turn Off** is a real one, with a real wake
+source, and the divider it needed to tell a charging pack from a full one is now
+known. What is still gated is the *automatic* fourth rung — the post putting
+itself to sleep — and that is a `kAutoSleepReady = false` in
+[`power.cpp`](components/power/power.cpp) rather than code that isn't written yet,
+so the reason travels with it. One thing has to land first:
 
 - **RTC-memory mirroring** for the alarm's `Status` and the recorder's in-flight
-  interval, because deep sleep loses RAM. An acknowledged alarm that forgets it
-  was acknowledged would re-alert on every wake, which turns Off into a button
-  that does nothing. The graph's ring needs no mirroring — `recorder::init()`
-  already backfills it from the log, so a wake rebuilds it exactly as a cold boot
-  does.
+  interval, because deep sleep loses RAM. Sleeping to save power has to come back
+  as the same device it went down as: an acknowledged alarm that forgets it was
+  acknowledged would re-alert on every wake, which turns Off into a button that
+  does nothing. Turn Off needs none of it — there the state is *meant* to be gone —
+  which is exactly why it could ship first. The graph's ring needs no mirroring
+  either: `recorder::init()` already backfills it from the log, so a wake rebuilds
+  it exactly as a cold boot does.
 
 #### The divider, and why USB presence is a guess
 
@@ -551,8 +556,8 @@ Kconfig delays, so a 60-second sleep dims at 20 and blanks at 40. Three
 independent numbers that all had to agree would have been three ways to configure
 a ladder that skips its own rungs.
 
-Two of the three modes are mostly promises until deep sleep is armed, and the
-page's footer says so outright rather than letting them look finished.
+Two of the three modes are mostly promises until the post can put itself to sleep,
+and the page's footer says so outright rather than letting them look finished.
 
 ### The menu and the settings screens
 
@@ -994,7 +999,7 @@ returns.
 
 ## Status
 
-**Everything is built but deep sleep, which is gated on one piece of plumbing.**
+**Everything is built but sleeping on idle, which is gated on one piece of plumbing.**
 
 | | |
 |---|---|
@@ -1014,7 +1019,7 @@ returns.
 | ✅ Built | the form trimmed to network + identity; thresholds in tenths, hold-to-repeat, debounced writes |
 | ✅ Built | alerts — the state machine driven at the sample cadence, the alarm panel with Snooze / Off, the tone in bursts |
 | ✅ Built | power — the idle ladder, alarm sleep-inhibit, battery sense and state-of-charge meter, the Power page, Turn Off |
-| ⬜️ Not started | deep sleep — the fourth rung, gated on RTC-memory mirroring |
+| ⬜️ Not started | sleeping on idle — the fourth rung reached by the ladder rather than by hand, gated on RTC-memory mirroring |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
 power. Each step ends at something flashable and observable. (Sensor jumped

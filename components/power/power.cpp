@@ -176,21 +176,23 @@ constexpr uint32_t kDimFractionNum  = 1;
 constexpr uint32_t kDarkFractionNum = 2;
 constexpr uint32_t kFractionDen     = 3;
 
-// --- Deep sleep -------------------------------------------------------------
-// The fourth rung is deliberately unreachable, and this is the gate rather than
-// missing code so the reason travels with it. Two things have to land first:
+// --- Sleeping on idle -------------------------------------------------------
+// Deep sleep itself is wired: turn_off() below is a real one, with a real wake
+// source, and the divider it needed to tell a charging pack from a full one is
+// known. What is still gated is the *automatic* fourth rung — the post putting
+// itself to sleep — and this is the gate rather than missing code so the reason
+// travels with it.
 //
-//   * the divider above, because sleeping is only correct on battery and USB
-//     presence is not detectable on this board until the ADC can tell a charging
-//     pack from a full one;
-//   * RTC-memory mirroring for the alarm's Status and the recorder's in-flight
-//     interval, because deep sleep loses RAM — and an acknowledged alarm that
-//     forgets it was acknowledged would re-alert on every wake, which turns the
-//     Off button into a button that does nothing.
+// RTC-memory mirroring has to land first, for the alarm's Status and the
+// recorder's in-flight interval, because deep sleep loses RAM. Sleeping to save
+// power has to come back as the same device it went down as: an acknowledged alarm
+// that forgets it was acknowledged would re-alert on every wake, which turns Off
+// into a button that does nothing. Turn Off needs none of that, which is exactly
+// why it could ship first — there, the state is *meant* to be gone.
 //
 // The graph's ring needs no mirroring: recorder::init() already backfills it from
 // the log, so a wake rebuilds it exactly as a cold boot does.
-constexpr bool kDeepSleepReady = false;
+constexpr bool kAutoSleepReady = false;
 
 constexpr int kTaskStack = 3072;
 // Below the alarm and the sampler, above nothing in particular: a late tier
@@ -309,7 +311,7 @@ Tier tier_for(uint32_t idle, bool alarm_active, settings::PowerMode mode, bool e
     return Tier::Active;
   }
 
-  if (idle >= sleep_after_ms) return kDeepSleepReady ? Tier::Asleep : Tier::Dark;
+  if (idle >= sleep_after_ms) return kAutoSleepReady ? Tier::Asleep : Tier::Dark;
   if (idle >= sleep_after_ms * kDarkFractionNum / kFractionDen) return Tier::Dark;
   if (idle >= sleep_after_ms * kDimFractionNum / kFractionDen) return Tier::Dim;
   return Tier::Active;
@@ -439,7 +441,7 @@ int cmd_power(int argc, char** argv) {
   std::printf("tier      %s\n", tier_name(tier()));
   std::printf("idle      %" PRIu32 " s (dim at %" PRIu32 ", dark at %" PRIu32 ")\n",
               idle_ms() / kMsPerSec, kDimAfterMs / kMsPerSec, kDarkAfterMs / kMsPerSec);
-  std::printf("deep sleep %s\n", kDeepSleepReady ? "armed" : "not wired yet");
+  std::printf("auto sleep %s\n", kAutoSleepReady ? "armed" : "not wired yet");
 
   if (!b.present) {
     std::printf("battery   no answer from ADC1_CH8 (GPIO%d)\n", board::kBatteryAdc);
@@ -531,9 +533,9 @@ esp_err_t init() {
 
   register_command();
   s_inited = true;
-  ESP_LOGI(kTag, "dim at %" PRIu32 " s, dark at %" PRIu32 " s, deep sleep %s",
+  ESP_LOGI(kTag, "dim at %" PRIu32 " s, dark at %" PRIu32 " s, auto sleep %s",
            kDimAfterMs / kMsPerSec, kDarkAfterMs / kMsPerSec,
-           kDeepSleepReady ? "armed" : "not wired yet");
+           kAutoSleepReady ? "armed" : "not wired yet");
   return ESP_OK;
 }
 
@@ -555,7 +557,7 @@ Battery battery() {
   return s_battery;
 }
 
-bool deep_sleep_armed() { return kDeepSleepReady; }
+bool auto_sleep_armed() { return kAutoSleepReady; }
 
 void turn_off() {
   ESP_LOGW(kTag, "switching off; a touch on the screen is the way back");

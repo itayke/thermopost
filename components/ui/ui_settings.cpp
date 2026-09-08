@@ -731,16 +731,16 @@ static_assert(kPowerFooterY + kFooterLines * kFontBodyH <= kScreenH - kEdgePad,
               "the two-line footer overflows the panel");
 
 constexpr const char* kModeAlwaysOn    = "Always on";
-constexpr const char* kModeConnected   = "On USB power";
+constexpr const char* kModeConnected   = "USB on";
 constexpr const char* kModeAlwaysSleep = "Always sleep";
-constexpr const char* kModeHint = "tap to cycle";
+constexpr const char* kModeHint = "Screen mode";
 
 // Two taps, because one stray tap would otherwise blank the device until a charger
 // turns up. The same shape as the Sound page's Test button: the label is the state,
 // so nothing has to be explained beside it.
 constexpr const char* kOffIdle    = "Turn Off";
 constexpr const char* kOffConfirm = "Sure?";
-constexpr const char* kOffHint    = "touch to wake";
+constexpr const char* kOffHint    = "Touch to wake";
 constexpr uint32_t kOffConfirmMs = 4000;
 lv_timer_t* s_off_timer = nullptr;
 
@@ -761,9 +761,10 @@ constexpr const char* kFooterNeverSleeps  = "stays awake; the screen still dims 
 constexpr const char* kFooterOnBattery    = "sleeps after %s on battery, never on USB";
 constexpr const char* kFooterAlwaysSleeps = "sleeps after %s, on any supply";
 // The one thing this page must not be coy about. Two of the three modes are mostly
-// promises until deep sleep is armed, and a settings page that let them look
-// finished would be the page lying about the device.
-constexpr const char* kFooterNotArmed = "deep sleep not wired yet — dims and blanks only";
+// promises until the post can put itself to sleep, and a settings page that let
+// them look finished would be the page lying about the device. Says "on its own"
+// because Turn Off, one button down this same page, deep-sleeps for real.
+constexpr const char* kFooterNotArmed = "won't sleep on its own yet — dims and blanks only";
 constexpr const char* kFooterOffConfirm = "tap again to switch off; a touch wakes it";
 
 int16_t sleep_index_for(uint16_t seconds) {
@@ -792,7 +793,7 @@ void refresh_footer() {
     lv_label_set_text(s_page.footer, kFooterNeverSleeps);
     return;
   }
-  if (!power::deep_sleep_armed()) {
+  if (!power::auto_sleep_armed()) {
     lv_label_set_text(s_page.footer, kFooterNotArmed);
     return;
   }

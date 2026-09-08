@@ -8,7 +8,8 @@
 // left to do it with.
 //
 // The policy is a ladder: full brightness while someone is interacting, dimmed
-// after a while, panel dark after longer, and eventually deep sleep. Every rung
+// after a while, panel dark after longer, and — once state survives a wake — deep
+// sleep, which for now is only reachable by hand, through Turn Off. Every rung
 // below the first is invisible to the parts of the device that matter — the
 // sensor keeps sampling, the recorder keeps writing and the alarm keeps watching
 // on all of them. A dark post is still a working post; that is the whole point of
@@ -19,7 +20,7 @@ enum class Tier : uint8_t {
   Active = 0,  // full brightness
   Dim,         // backlight down, screen still readable at arm's length
   Dark,        // panel blanked; everything else still running
-  Asleep,      // deep sleep — see power.cpp, not reachable yet
+  Asleep,      // deep sleep — reached only by turn_off(); see power.cpp
 };
 
 // Configure the battery sense channel and start the ladder. Requires
@@ -57,10 +58,11 @@ struct Battery {
 };
 Battery battery();
 
-// Is the fourth rung actually reachable? False until deep sleep is wired, and the
-// Power settings page says so on its footer rather than offering two modes that
-// quietly do half of what they claim.
-bool deep_sleep_armed();
+// Does the ladder actually reach the fourth rung on its own? Deep sleep itself is
+// wired — turn_off() below is one — but the post does not yet put *itself* to
+// sleep, and the Power settings page says so on its footer rather than offering
+// two modes that quietly do half of what they claim.
+bool auto_sleep_armed();
 
 // Is the post running on external power?
 //
