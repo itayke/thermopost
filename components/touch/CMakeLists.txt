@@ -10,6 +10,7 @@ idf_component_register(
         esp_lcd             # panel IO for the touch controller
         board_i2c
         display             # the LVGL display the indev attaches to
+        power               # a touch on a dark screen only wakes it
         lvgl__lvgl
         espressif__esp_lcd_touch_ft5x06
 )

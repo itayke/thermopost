@@ -96,4 +96,15 @@ bool resume_from_off();
 // else that decides the screen has earned being lit.
 void wake();
 
+// Report a touch that has just landed, and ask whether it should go no further.
+//
+// Returns true when the screen was not fully lit: the tap's only job was to bring
+// it back, and delivering it as well would mean the first touch on a dimmed or
+// dark post also presses whatever happened to be under the finger — on a screen
+// nobody has read yet. Returns false when the post was already awake, where the
+// touch is an ordinary one and belongs to the UI.
+//
+// Wakes the ladder either way, so ask once per press, on the press edge.
+bool consume_touch();
+
 }  // namespace thermopost::power

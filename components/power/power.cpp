@@ -603,4 +603,17 @@ void wake() {
   s_woke_at_ms = now;
 }
 
+bool consume_touch() {
+  // Before init(), every touch is an ordinary one — which is the safe answer: a
+  // post whose ladder is not running yet is at full brightness by definition.
+  if (s_mutex == nullptr) return false;
+  const int64_t now = esp_timer_get_time() / 1000;
+  Lock l;
+  // Read the tier before stamping the wake, or the touch would be judged against
+  // the state it is about to create.
+  const bool was_lit = s_tier == Tier::Active;
+  s_woke_at_ms = now;
+  return !was_lit;
+}
+
 }  // namespace thermopost::power

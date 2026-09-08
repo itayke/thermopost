@@ -409,6 +409,17 @@ Idle time comes from LVGL's own inactivity counter, which the indev layer resets
 on a real press — so the ladder counts *taps* rather than interrupt edges, and
 this component never has to know anything about the touch controller.
 
+**The tap that wakes the screen does nothing else.** Once the ladder has stepped
+below Active, the next touch is consumed in `touch.cpp` and never handed to LVGL:
+the user is looking at a screen they have not read yet, and on the main screen
+almost every pixel is a button, so delivering it would mean waking the post into
+whichever page the finger happened to land on. The decision is `power::consume_touch()`
+and it is asked once, on the press edge, then *latched for the whole gesture* —
+the ladder is back at Active within one 200 ms tick, so deciding per read would
+swallow the press and deliver the release a moment later, which is exactly the
+click this prevents. An alarm is unaffected: it pins the ladder at Active, so
+Snooze and Off are live on the first tap.
+
 **A live alarm outranks the ladder and lights the screen**, rather than merely
 holding it where it was. The panel an alarm raises is useless on a dark display,
 and a post that beeps in the dark makes someone hunt for a device instead of

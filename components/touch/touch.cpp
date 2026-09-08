@@ -7,6 +7,7 @@
 #include "board_i2c.hpp"
 #include "board_pins.hpp"
 #include "display.hpp"
+#include "power.hpp"
 
 #include "esp_lcd_touch_ft5x06.h"
 #include "esp_log.h"
@@ -69,6 +70,20 @@ esp_lcd_touch_handle_t s_touch = nullptr;
 // wherever the pointer happened to sit before — usually (0,0).
 lv_point_t s_last = {0, 0};
 
+// --- The wake-up tap --------------------------------------------------------
+// A touch that lands on a dimmed or blanked screen is a request to see the post,
+// not a press of whatever is under the finger — the user is looking at a screen
+// they have not read yet, and on the main screen every one of those pixels is a
+// button. So the first touch after the ladder has stepped down is consumed here:
+// it wakes the device and is never handed to LVGL.
+//
+// Latched for the whole gesture rather than decided on each read, because the
+// ladder is back at Active within one of its ticks. Deciding per read would let
+// the press be swallowed and the release delivered a fraction of a second later,
+// which is exactly the click this is meant to prevent.
+bool s_finger_down = false;
+bool s_swallowing  = false;
+
 int32_t clamp(int32_t v, int32_t hi) {
   if (v < 0) return 0;
   if (v > hi) return hi;
@@ -81,16 +96,21 @@ int32_t clamp(int32_t v, int32_t hi) {
 // rate. Compiles away entirely — including its edge detector — when the option is
 // off, which is why the state lives in here rather than beside s_last.
 #if CONFIG_THERMOPOST_TOUCH_LOG
-void log_touch(const esp_lcd_touch_point_data_t& raw, lv_point_t mapped, bool pressed) {
+void log_touch(const esp_lcd_touch_point_data_t& raw, lv_point_t mapped, bool pressed,
+               bool swallowed) {
   static bool was_pressed = false;
   if (pressed && !was_pressed) {
-    ESP_LOGI(kTag, "touch raw (%d,%d) -> screen (%" PRId32 ",%" PRId32 ")",
-             static_cast<int>(raw.x), static_cast<int>(raw.y), mapped.x, mapped.y);
+    // The suffix matters while calibrating: without it a woken tap logs exactly
+    // like a delivered one, and the widget that did not respond looks like a
+    // mapping error rather than the wake-up it was.
+    ESP_LOGI(kTag, "touch raw (%d,%d) -> screen (%" PRId32 ",%" PRId32 ")%s",
+             static_cast<int>(raw.x), static_cast<int>(raw.y), mapped.x, mapped.y,
+             swallowed ? " (wake only)" : "");
   }
   was_pressed = pressed;
 }
 #else
-inline void log_touch(const esp_lcd_touch_point_data_t&, lv_point_t, bool) {}
+inline void log_touch(const esp_lcd_touch_point_data_t&, lv_point_t, bool, bool) {}
 #endif
 
 // Called by LVGL from its own task, which already holds the LVGL lock.
@@ -101,22 +121,31 @@ void read_cb(lv_indev_t*, lv_indev_data_t* data) {
   esp_lcd_touch_read_data(s_touch);
   esp_lcd_touch_get_data(s_touch, &point, &points, 1);
 
-  if (points > 0) {
+  const bool pressed = points > 0;
+
+  lv_point_t mapped = s_last;
+  if (pressed) {
     // Clamp after the offset, not before: a correction applied near an edge would
     // otherwise push the point outside the panel. Clamping rather than trusting
     // also covers the mirror above, which is `x_max - x` and overshoots by one at
     // the origin edge, and a controller reporting outside its configured range.
-    s_last.x = clamp(point.x + kOffsetX, board::kLcdHRes - 1);
-    s_last.y = clamp(point.y + kOffsetY, board::kLcdVRes - 1);
-    data->state = LV_INDEV_STATE_PRESSED;
-  } else {
-    data->state = LV_INDEV_STATE_RELEASED;
+    mapped.x = clamp(point.x + kOffsetX, board::kLcdHRes - 1);
+    mapped.y = clamp(point.y + kOffsetY, board::kLcdVRes - 1);
   }
-  data->point = s_last;
-  log_touch(point, s_last, points > 0);
 
-  // When power/ lands, this is where an input that only wakes the screen gets
-  // consumed rather than delivered — see the plan's note on power::consume_input().
+  // Asked once, on the press edge — power::consume_touch() wakes the ladder as a
+  // side effect, and a held finger would otherwise re-stamp it at LVGL's read rate.
+  if (pressed && !s_finger_down) s_swallowing = power::consume_touch();
+  s_finger_down = pressed;
+  if (!pressed) s_swallowing = false;
+
+  const bool deliver = pressed && !s_swallowing;
+  // s_last only moves for a delivered press, so the release LVGL is still holding
+  // from the previous gesture keeps the point it was pressed at.
+  if (deliver) s_last = mapped;
+  data->state = deliver ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+  data->point = s_last;
+  log_touch(point, mapped, pressed, s_swallowing);
 }
 
 }  // namespace
