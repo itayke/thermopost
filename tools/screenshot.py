@@ -42,8 +42,17 @@ READ_TIMEOUT_S = 0.5       # per readline, so a silent board is noticed
 CAPTURE_TIMEOUT_S = 20.0   # whole attempt; ~200 lines is normally under a second
 
 # Re-sent rather than written once and hoped for, so a board that happens to be
-# booting when this connects still answers instead of timing out.
+# booting when this connects still answers instead of timing out. Only ever while
+# it is *silent*, though: a second `shot` sent to a board that is already dumping
+# queues a second whole frame, which then has nobody to read it.
 RESEND_EVERY_S = 2.0
+QUIET_S = 0.4
+
+# One garbled line is worth retrying — it is the same word every time, so the
+# second refusal is the firmware genuinely not having the command.
+UNKNOWN_RETRIES = 1
+
+DRAIN_MAX_S = 5.0   # bound on waiting for a board to stop talking
 
 # The protocol, matched to the constants in display.cpp.
 HEADER_PREFIX = "# shot "
@@ -82,6 +91,19 @@ def diagnose(header, seen):
             "If there is no `post>` prompt among those, the REPL is not up.")
 
 
+def drain(ser):
+    """Read until the board stops talking, so it is never left mid-dump.
+
+    Closing the port on a board that is still printing a frame abandons ~200 lines
+    with nobody reading them, and the next run then meets a console still working
+    through the backlog.
+    """
+    end = time.monotonic() + DRAIN_MAX_S
+    while time.monotonic() < end:
+        if not ser.read(4096):
+            return
+
+
 def capture(port, verbose=False):
     """Run `shot` and return (width, height, stride, pixel bytes)."""
     with serial.Serial(port, BAUD, timeout=READ_TIMEOUT_S) as ser:
@@ -95,45 +117,61 @@ def capture(port, verbose=False):
 
         deadline = time.monotonic() + CAPTURE_TIMEOUT_S
         next_send = 0.0
+        last_rx = 0.0
+        unknown = 0
         header = None
         chunks = []
         seen = []
-        while time.monotonic() < deadline:
-            now = time.monotonic()
-            if header is None and now >= next_send:
-                ser.write(b"shot\r\n")
-                ser.flush()
-                next_send = now + RESEND_EVERY_S
-            line = ser.readline().decode("utf-8", "replace").strip()
-            if not line:
-                continue
-            if verbose:
-                print(f"< {line}", file=sys.stderr)
-            # Kept for the error path: a board that answered something is a very
-            # different problem from a board that said nothing at all.
-            if len(seen) < DIAGNOSTIC_LINES:
-                seen.append(line)
-            if UNKNOWN_COMMAND in line:
-                raise RuntimeError("the board's REPL does not know `shot` — this "
-                                   "firmware predates it. Flash the current build.")
-            # Everything unmarked is skipped on purpose: the REPL echoes the
-            # command, and ESP_LOG shares this one channel, so log lines land in
-            # the middle of the pixels and must not be mistaken for them.
-            #
-            # End and abort are tested before the header, not after: they share its
-            # "# shot " prefix, so the other order reads the last line of a good
-            # capture as the first line of a new one and throws the frame away.
-            if line.startswith(END_MARKER):
-                break
-            if line.startswith(ABORT_MARKER):
-                raise RuntimeError("the board aborted the capture mid-frame")
-            if line.startswith(HEADER_PREFIX):
-                header = line[len(HEADER_PREFIX):].split()
-                chunks = []
-            elif line.startswith(DATA_PREFIX) and header is not None:
-                chunks.append(line[len(DATA_PREFIX):])
-        else:
-            raise RuntimeError(diagnose(header, seen))
+        try:
+            while time.monotonic() < deadline:
+                now = time.monotonic()
+                # Silence is the precondition, not just the clock: re-sending into a
+                # board that is mid-frame is what queues a dump nobody collects.
+                if header is None and now >= next_send and now - last_rx >= QUIET_S:
+                    ser.write(b"shot\r\n")
+                    ser.flush()
+                    next_send = now + RESEND_EVERY_S
+                line = ser.readline().decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                last_rx = time.monotonic()
+                if verbose:
+                    print(f"< {line}", file=sys.stderr)
+                # Kept for the error path: a board that answered something is a very
+                # different problem from a board that said nothing at all.
+                if len(seen) < DIAGNOSTIC_LINES:
+                    seen.append(line)
+                if UNKNOWN_COMMAND in line:
+                    unknown += 1
+                    if unknown > UNKNOWN_RETRIES:
+                        raise RuntimeError(
+                            "the board refused `shot` twice. Either this firmware "
+                            "predates the command, or the console is not accepting "
+                            "input cleanly — power-cycle it and try again.")
+                    next_send = 0.0   # try once more; one mangled line is not proof
+                    continue
+                # Everything unmarked is skipped on purpose: the REPL echoes the
+                # command, and ESP_LOG shares this one channel, so log lines land in
+                # the middle of the pixels and must not be mistaken for them.
+                #
+                # End and abort are tested before the header, not after: they share
+                # its "# shot " prefix, so the other order reads the last line of a
+                # good capture as the first line of a new one and drops the frame.
+                if line.startswith(END_MARKER):
+                    break
+                if line.startswith(ABORT_MARKER):
+                    raise RuntimeError("the board aborted the capture mid-frame")
+                if line.startswith(HEADER_PREFIX):
+                    header = line[len(HEADER_PREFIX):].split()
+                    chunks = []
+                elif line.startswith(DATA_PREFIX) and header is not None:
+                    chunks.append(line[len(DATA_PREFIX):])
+            else:
+                raise RuntimeError(diagnose(header, seen))
+        finally:
+            # Always, including on the way out of a failure: a board left printing
+            # into a closed port is the next run's mystery.
+            drain(ser)
 
         if header is None:
             raise RuntimeError(diagnose(header, seen))
