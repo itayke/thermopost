@@ -9,3 +9,6 @@ dependencies.lock
 .DS_Store
 *.swp
 /tools/__pycache__
+# Screen captures from tools/screenshot.py — scratch by default; a shot that is
+# meant for the README gets committed by path, not by living here.
+/captures/

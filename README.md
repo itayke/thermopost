@@ -931,11 +931,14 @@ console prints the active screen and `tools/screenshot.py` turns it into a PNG:
 
 ```sh
 . $HOME/esp/esp-idf/export.sh     # pyserial lives in IDF's environment
-python tools/screenshot.py -o docs/main-screen.png
+python tools/screenshot.py -o captures/main-screen.png
 ```
 
-Close `idf.py monitor` first — the port takes one reader at a time, and a monitor
-still holding it looks exactly like a board that will not answer.
+`captures/` is git-ignored and the directory is created if it is missing, so
+capturing is scratch work by default; a shot meant for the README is committed by
+path rather than by where it landed. Close `idf.py monitor` first — the port takes
+one reader at a time, and a monitor still holding it looks exactly like a board
+that will not answer.
 
 **Navigate to the screen you want, then run the command.** Connecting does not
 reset the post, so it captures whatever it is showing. That is not free: on the

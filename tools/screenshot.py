@@ -19,6 +19,7 @@ than pulling in Pillow for one file a day.
 import argparse
 import base64
 import binascii
+import os
 import struct
 import sys
 import time
@@ -68,6 +69,9 @@ PNG_BIT_DEPTH = 8
 PNG_COLOR_TYPE_RGB = 2
 PNG_FILTER_NONE = 0
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+# Git-ignored, so a capture is scratch until someone commits it by path.
+DEFAULT_DIR = "captures"
 
 
 def find_port():
@@ -238,7 +242,8 @@ def write_png(path, width, height, rows):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-p", "--port", help="serial port (auto-detected if omitted)")
-    ap.add_argument("-o", "--out", default="screenshot.png", help="PNG to write")
+    ap.add_argument("-o", "--out", default=os.path.join(DEFAULT_DIR, "screenshot.png"),
+                    help="PNG to write (its directory is created if missing)")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="echo every line the board sends, to stderr")
     args = ap.parse_args()
@@ -256,6 +261,9 @@ def main():
     except RuntimeError as e:
         sys.exit(str(e))
 
+    parent = os.path.dirname(args.out)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     write_png(args.out, width, height, to_rgb_rows(data, width, height, stride))
     print(f"{args.out}: {width}x{height} from {port}")
 
