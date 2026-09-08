@@ -38,15 +38,22 @@ USB_JTAG_PID = 0x1001
 # Meaningless for USB CDC, which ignores it, but pyserial wants a number.
 BAUD = 115200
 
-READ_TIMEOUT_S = 1.0       # per readline, so a silent board is noticed
-CAPTURE_TIMEOUT_S = 20.0   # whole transfer; ~200 lines is normally under a second
-SETTLE_S = 0.2             # let the REPL finish any prompt it was mid-way through
+READ_TIMEOUT_S = 0.5       # per readline, so a silent board is noticed
+CAPTURE_TIMEOUT_S = 20.0   # whole attempt; ~200 lines is normally under a second
+
+# The command is re-sent rather than written once and hoped for. Opening this port
+# can reset the board — on the S3's native USB-Serial-JTAG, DTR and RTS are the
+# reset and boot lines — and a `shot` written into a board that is still booting is
+# simply lost, which looks identical to firmware that has never heard of it.
+RESEND_EVERY_S = 2.0
 
 # The protocol, matched to the constants in display.cpp.
 HEADER_PREFIX = "# shot "
 END_MARKER = "# shot end"
 ABORT_MARKER = "# shot abort"
 DATA_PREFIX = "S:"
+UNKNOWN_COMMAND = "Unrecognized command"   # what esp_console prints for a typo
+DIAGNOSTIC_LINES = 12                      # enough to show a prompt or a boot log
 SUPPORTED_FORMAT = "rgb565"
 BYTES_PER_PIXEL = 2
 
@@ -63,40 +70,73 @@ def find_port():
     return matches[0] if len(matches) == 1 else None
 
 
-def capture(port):
+def diagnose(header, seen):
+    """Say which of the several ways this fails actually happened."""
+    if header is not None:
+        return "the frame stopped part-way — try again, and with --verbose"
+    if not seen:
+        return (f"nothing at all came back in {CAPTURE_TIMEOUT_S:.0f} s. The port opened, "
+                "so something is there — check the board is running (not switched off "
+                "via the Power page, which deep-sleeps and drops the USB device).")
+    heard = "\n".join(f"  {line}" for line in seen)
+    return (f"no frame in {CAPTURE_TIMEOUT_S:.0f} s, though the board was talking. "
+            f"First lines heard:\n{heard}\n"
+            "If there is no `post>` prompt among those, the REPL is not up.")
+
+
+def capture(port, verbose=False):
     """Run `shot` and return (width, height, stride, pixel bytes)."""
     with serial.Serial(port, BAUD, timeout=READ_TIMEOUT_S) as ser:
-        time.sleep(SETTLE_S)
+        # Deasserted before anything else, for the reason above: left asserted they
+        # can hold the board in reset or bounce it into the ROM bootloader.
+        ser.dtr = False
+        ser.rts = False
         ser.reset_input_buffer()
-        ser.write(b"shot\r\n")
-        ser.flush()
 
         deadline = time.monotonic() + CAPTURE_TIMEOUT_S
+        next_send = 0.0
         header = None
         chunks = []
+        seen = []
         while time.monotonic() < deadline:
+            now = time.monotonic()
+            if header is None and now >= next_send:
+                ser.write(b"shot\r\n")
+                ser.flush()
+                next_send = now + RESEND_EVERY_S
             line = ser.readline().decode("utf-8", "replace").strip()
             if not line:
                 continue
+            if verbose:
+                print(f"< {line}", file=sys.stderr)
+            # Kept for the error path: a board that answered something is a very
+            # different problem from a board that said nothing at all.
+            if len(seen) < DIAGNOSTIC_LINES:
+                seen.append(line)
+            if UNKNOWN_COMMAND in line:
+                raise RuntimeError("the board's REPL does not know `shot` — this "
+                                   "firmware predates it. Flash the current build.")
             # Everything unmarked is skipped on purpose: the REPL echoes the
             # command, and ESP_LOG shares this one channel, so log lines land in
             # the middle of the pixels and must not be mistaken for them.
+            #
+            # End and abort are tested before the header, not after: they share its
+            # "# shot " prefix, so the other order reads the last line of a good
+            # capture as the first line of a new one and throws the frame away.
+            if line.startswith(END_MARKER):
+                break
+            if line.startswith(ABORT_MARKER):
+                raise RuntimeError("the board aborted the capture mid-frame")
             if line.startswith(HEADER_PREFIX):
                 header = line[len(HEADER_PREFIX):].split()
                 chunks = []
-            elif line.startswith(DATA_PREFIX):
-                if header is not None:
-                    chunks.append(line[len(DATA_PREFIX):])
-            elif line.startswith(ABORT_MARKER):
-                raise RuntimeError("the board aborted the capture mid-frame")
-            elif line.startswith(END_MARKER):
-                break
+            elif line.startswith(DATA_PREFIX) and header is not None:
+                chunks.append(line[len(DATA_PREFIX):])
         else:
-            raise RuntimeError(f"no complete frame within {CAPTURE_TIMEOUT_S:.0f} s — "
-                               "is the firmware new enough to have `shot`?")
+            raise RuntimeError(diagnose(header, seen))
 
         if header is None:
-            raise RuntimeError("the board never answered `shot`")
+            raise RuntimeError(diagnose(header, seen))
 
     if len(header) != 4:
         raise RuntimeError(f"unreadable header: {' '.join(header)!r}")
@@ -161,6 +201,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-p", "--port", help="serial port (auto-detected if omitted)")
     ap.add_argument("-o", "--out", default="screenshot.png", help="PNG to write")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="echo every line the board sends, to stderr")
     args = ap.parse_args()
 
     port = args.port or find_port()
@@ -170,7 +212,7 @@ def main():
                  + (listing or "  (nothing)"))
 
     try:
-        width, height, stride, data = capture(port)
+        width, height, stride, data = capture(port, args.verbose)
     except serial.SerialException as e:
         sys.exit(f"{port}: {e}\nIs `idf.py monitor` still holding it?")
     except RuntimeError as e:

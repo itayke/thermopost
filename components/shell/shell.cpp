@@ -13,6 +13,13 @@ constexpr const char* kTag = "shell";
 // is attached to.
 constexpr const char* kPrompt = "post>";
 
+// esp_console's default is 4096, which `shot` overflows outright: a screenshot
+// re-renders the whole widget tree, and that recursion is the work display's own
+// LVGL task is given 8192 for. The failure is not subtle — a stack-overflow panic
+// and a reboot the moment the command is typed — but it is a runtime one, so the
+// size lives here with the reason rather than being discovered again.
+constexpr uint32_t kReplStack = 8192;
+
 bool s_ready = false;
 
 }  // namespace
@@ -23,6 +30,7 @@ esp_err_t init() {
   esp_console_repl_t* repl = nullptr;
   esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
   repl_cfg.prompt = kPrompt;
+  repl_cfg.task_stack_size = kReplStack;
 
   // The board's only USB port is the ESP32-S3's native USB-Serial-JTAG (no UART
   // bridge — see sdkconfig.defaults), so the REPL has to read from there. A UART0
