@@ -379,6 +379,41 @@ alarms are unmuted. Two predicates would be two things to keep in step, and the
 failure mode is the one nobody would report: a panel offering a Snooze button for
 a tone that already stopped.
 
+### The hardware alert window
+
+The MCP9808 does not only convert — it compares. `T_UPPER` and `T_LOWER` hold a band
+in its own registers, and it drives an open-drain **ALERT** pin whenever a conversion
+lands outside them, in silicon, at roughly 200 µA, **whether or not the SoC is
+running**. `alert::init()`'s tick pushes the configured band down to it every second,
+so the part is always judging the same limits the firmware is.
+
+That is the whole reason sleeping on idle is possible at all. A post asleep between
+records is blind between them; a post whose *sensor* is awake is not. Wired to
+`board::kSensorAlert` (`IO21`, RTC-capable, on the expansion header) the line becomes
+a wake source, and an excursion reaches the post within one 250 ms conversion —
+**sooner than this firmware notices while fully awake**, since a running post only
+looks once a second.
+
+Three details that had to be right:
+
+- **The window is a trigger, not a verdict.** It carries zero hardware hysteresis and
+  the limits are rounded *inward*, so it can only ever sit inside the software band
+  and trip early. `alert_logic` still makes the actual call, with the real hysteresis.
+  A false wake costs a few hundred milliseconds; a missed one is the thing being
+  prevented.
+- **`T_CRIT` is a trap.** Its power-on value is 0 °C and CRIT asserts on `T_A >=
+  T_CRIT`, so a freshly reset MCP9808 has its alert asserted at any room temperature.
+  It is pushed to 255 °C, past anything the part can measure.
+- **The window is rewritten after every re-probe.** The sensor is on a flying lead; a
+  reseated connector comes back at power-on defaults, and a window nobody rewrote
+  would be a post that thinks it is protected and is not.
+
+**It can be proved before the wire is soldered.** The part packs its own comparison
+into bits 15..13 of every ambient read, and those track the limits whether or not the
+ALERT output is enabled — so `sensor` logs `hardware alert asserted` / `cleared` on
+the edge. Warm the sensor past the band with the console open and the window
+demonstrates itself over I²C alone.
+
 ### Going quiet when nobody is looking
 
 Idle time walks the screen down a ladder, and nothing below the first rung is
@@ -434,7 +469,23 @@ source, and the divider it needed to tell a charging pack from a full one is now
 known. What is still gated is the *automatic* fourth rung — the post putting
 itself to sleep — and that is a `kAutoSleepReady = false` in
 [`power.cpp`](components/power/power.cpp) rather than code that isn't written yet,
-so the reason travels with it. One thing has to land first:
+so the reason travels with it.
+
+**The blocker is a wire, not a data structure.** Dim and dark are invisible to what
+the post is for — the sensor keeps sampling, the recorder keeps writing, the alarm
+keeps watching. Deep sleep is not: it stops all three. A post that duty-cycles
+between records is blind between them, so an excursion that starts and ends inside
+one interval produces no alarm and no row. For a device whose entire job is catching
+excursions, that is not an acceptable trade, and no amount of firmware recovers it —
+a sleeping post samples when it is awake.
+
+The MCP9808 answers it in hardware, which is why it is the part on the end of the
+lead. See **The hardware alert window** below: the sensor watches the band in its own
+silicon while the SoC is off, and `IO21` is reserved to carry its ALERT pin to an
+RTC-capable input. Until that line is fitted and proved, sleeping on idle should not
+ship at all.
+
+With the wire in, one thing still has to land:
 
 - **RTC-memory mirroring** for the alarm's `Status` and the recorder's in-flight
   interval, because deep sleep loses RAM. Sleeping to save power has to come back
@@ -444,6 +495,13 @@ so the reason travels with it. One thing has to land first:
   which is exactly why it could ship first. The graph's ring needs no mirroring
   either: `recorder::init()` already backfills it from the log, so a wake rebuilds
   it exactly as a cold boot does.
+
+  Two members of that mirror are traps rather than copies. `Status::snooze_until_ms`
+  is on the `esp_timer` monotonic clock, which restarts at zero on a deep-sleep wake,
+  so mirroring the struct verbatim would expire every snooze instantly — it has to
+  travel as wall-clock or as remaining time. And `recorder::written()` is *since
+  boot*, which on a post that boots every minute stops answering the question it is
+  on screen to answer.
 
 #### The divider, and why USB presence is a guess
 
@@ -1091,6 +1149,7 @@ returns.
 | ✅ Built | `cloud` + `shell` — Wi-Fi with unbounded backoff, SNTP clock, `cloud` serial command |
 | ✅ Built | the upload queue — batched POSTs to Apps Script, NVS high-water mark, host-tested JSON |
 | ✅ Built | the upload cadence — a floor on how often the radio comes up, bypassed by a flagged record |
+| ✅ Built | the hardware alert window — the MCP9808's own comparator tracks the band, ready for the ALERT wire |
 | ✅ Built | the captive portal, the always-on config form, mDNS, and the Network screen |
 | ✅ Built | the Configure page — a QR that joins the setup AP, closing it on the way out |
 | ✅ Built | the form trimmed to network + identity; thresholds in tenths, hold-to-repeat, debounced writes |

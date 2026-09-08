@@ -113,6 +113,17 @@ void task(void*) {
     const Thresholds t = settings::thresholds();
     const int64_t now = now_ms();
 
+    // Keep the part's own comparator on the same band this task is judging against.
+    // Pushed from here rather than from the settings setter because this is where the
+    // sanitized band already is, and because re-pushing it every tick is what makes an
+    // edit from the menu apply promptly without any change-notification machinery —
+    // sensor::set_alert_window() is a no-op when nothing moved.
+    //
+    // The window is what lets the post sleep between records without missing an
+    // excursion between them; it does nothing for a post that is awake, which is why
+    // it can be wired up and proved long before anything sleeps.
+    sensor::set_alert_window(t.min_c100, t.max_c100);
+
     State was;
     Status is;
     {

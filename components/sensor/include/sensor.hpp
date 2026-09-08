@@ -43,6 +43,10 @@ struct Reading {
   int64_t  uptime_us;  // esp_timer time this sample was taken; 0 if never
   uint32_t samples;    // successful samples since boot — proof it is still live
   uint16_t misses;     // consecutive failed reads; 0 whenever valid
+  // The part's OWN verdict on the band, from the alert flags it packs into every
+  // ambient read — not this firmware's. False until set_alert_window() has been
+  // called, and false whenever !valid. See set_alert_window().
+  bool     alert;
 };
 
 // Probe the bus, identify the part by its manufacturer ID, configure it and
@@ -57,6 +61,24 @@ esp_err_t init();
 // The most recent sample. Cheap and lock-free enough to call from the LVGL task
 // on every frame.
 Reading latest();
+
+// Program the part's own comparator with the alarm band.
+//
+// This is what lets the post sleep between records without going blind between
+// them. The MCP9808 compares every conversion against these limits in its own
+// silicon, at roughly 200 µA, whether or not the SoC is running, and drives its
+// ALERT pin (board::kSensorAlert) when the reading leaves the window — within one
+// 250 ms conversion, which is sooner than this firmware notices while fully awake.
+//
+// The hardware window is a trigger to wake and look, never the alarm decision: it
+// carries no hysteresis, and alert_logic still makes the call. The limits are
+// rounded INWARD so the window can only ever sit inside the software band and trip
+// early; a false wake is cheap, and a missed one is the whole thing being prevented.
+//
+// Queued rather than written here — the sampling task owns the device handle, and
+// applies this on its next tick and again after any re-probe, because a reseated
+// sensor comes back at its power-on defaults. Cheap to call repeatedly.
+void set_alert_window(int16_t min_c100, int16_t max_c100);
 
 // I²C address the sensor was found at, or 0 while it is missing.
 uint8_t address();

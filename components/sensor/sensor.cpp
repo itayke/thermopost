@@ -16,6 +16,9 @@ constexpr const char* kTag = "sensor";
 
 // --- MCP9808 registers (datasheet DS20005095B §5.1) ---
 constexpr uint8_t kRegConfig     = 0x01;
+constexpr uint8_t kRegTUpper     = 0x02;
+constexpr uint8_t kRegTLower     = 0x03;
+constexpr uint8_t kRegTCrit      = 0x04;
 constexpr uint8_t kRegAmbient    = 0x05;
 constexpr uint8_t kRegMfrId      = 0x06;  // expect 0x0054
 constexpr uint8_t kRegDevId      = 0x07;  // expect 0x04xx (device 0x04, revision xx)
@@ -28,6 +31,43 @@ constexpr uint8_t  kDevId = 0x04;
 // written explicitly so a warm reset from an earlier experiment can't leave the
 // part in shutdown and make it look dead.
 constexpr uint16_t kConfigRun = 0x0000;
+
+// --- The hardware alert window (§5.1.1, §5.1.2) -----------------------------
+// The point of this is deep sleep. The part compares every conversion against
+// T_UPPER/T_LOWER in its own silicon, at about 200 uA, whether or not the SoC is
+// running — so a post asleep between records is not blind between them. Wired to
+// board::kSensorAlert it wakes the SoC within one conversion, which is faster than
+// this firmware notices an excursion while fully awake.
+//
+// Bit 3 enables the ALERT output. Everything else stays zero deliberately:
+// comparator mode (so the pin follows the temperature rather than latching until
+// it is read), active low, alerting on the window as well as T_CRIT, and zero
+// hardware hysteresis. The last one matters — alert_logic owns hysteresis, and a
+// hardware band that recovered later than the software one would hold the pin
+// asserted after the alarm had already cleared.
+constexpr uint16_t kConfigAlertEnable = 0x0008;
+
+// T_CRIT must be pushed out of the way, and this is the trap in the part. Its
+// power-on value is 0 C and CRIT asserts on T_A >= T_CRIT, so a freshly reset
+// MCP9808 has its alert asserted at any room temperature. The MCP9808 measures to
+// +125 C, so a critical limit above that can never be reached.
+constexpr int16_t kCritNeverC100 = 25500;
+
+// Limit registers hold the temperature in bits 12:2 at 0.25 C per LSB — a quarter
+// of the ambient register's resolution — with bit 12 the sign, in the same 13-bit
+// two's complement the ambient read decodes. Bits 1:0 and 15:13 read as zero.
+constexpr uint16_t kLimitFieldMask = 0x1FFF;
+constexpr int32_t  kC100PerQuarter = 25;
+constexpr int32_t  kTicksPerQuarter = 4;   // 0.25 C in units of 1/16 C
+// What the 13-bit field can express, in quarter-degrees: bits 12:0 hold a two's
+// complement count of 1/16 C, so -4096..4095 ticks, and a quarter is four of them.
+constexpr int32_t  kQuarterMin = -1024;   // -256.00 C
+constexpr int32_t  kQuarterMax = 1023;    // +255.75 C
+
+// Ambient register bits 15..13: T_A >= T_CRIT, T_A > T_UPPER, T_A < T_LOWER. They
+// track the comparison whether or not the ALERT output is enabled, so the window can
+// be proved over I2C alone — before the line is soldered.
+constexpr uint16_t kAmbientAlertMask = 0xE000;
 
 // Resolution 0x03 = 0.0625 °C per LSB with a 250 ms conversion — the finest and
 // slowest of the four, and the power-on default. At a one-second cadence there
@@ -78,8 +118,17 @@ bool s_started = false;
 // the critical section is a struct copy — no allocation, no failure path, and
 // the LVGL task can never be made to wait on an I²C transaction, because the
 // sampler only takes the lock after the bus work is done.
-Reading s_latest = {kInvalidTempC100, false, 0, 0, 0};
+Reading s_latest = {kInvalidTempC100, false, 0, 0, 0, false};
 portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
+
+// The window the caller wants, and whether the part has been told about it yet.
+// Guarded by s_lock, applied by the sampling task rather than by the setter: the
+// task owns s_dev, and the registers have to be rewritten after every re-probe
+// anyway, because a reseated sensor comes back at its power-on defaults.
+int16_t s_win_min_c100 = 0;
+int16_t s_win_max_c100 = 0;
+bool    s_win_wanted = false;
+bool    s_win_dirty  = false;
 
 void publish(const Reading& r) {
   taskENTER_CRITICAL(&s_lock);
@@ -113,6 +162,47 @@ int16_t raw_to_c100(uint16_t raw) {
   if (raw & kAmbientSignBit) ticks -= kAmbientSpan;  // sign bit set → below 0 °C
   const int32_t rounding = (ticks < 0 ? -kC100PerTickDen : kC100PerTickDen) / 2;
   return static_cast<int16_t>((ticks * kC100PerTickNum + rounding) / kC100PerTickDen);
+}
+
+// Quarter-degrees, rounded so the hardware window can only ever sit INSIDE the
+// software band: T_UPPER down, T_LOWER up. A window wider than the band could let a
+// reading raise an alarm on screen that the part never flagged — which is exactly the
+// miss the ALERT line exists to prevent. Narrower only ever wakes the post early, and
+// a false wake costs a few hundred milliseconds.
+uint16_t limit_from_c100(int16_t c100, bool round_down) {
+  const int32_t v = c100;
+  int32_t q;
+  if (round_down) {
+    q = (v >= 0) ? v / kC100PerQuarter
+                 : -((-v + kC100PerQuarter - 1) / kC100PerQuarter);
+  } else {
+    q = (v >= 0) ? (v + kC100PerQuarter - 1) / kC100PerQuarter
+                 : -((-v) / kC100PerQuarter);
+  }
+  if (q < kQuarterMin) q = kQuarterMin;
+  if (q > kQuarterMax) q = kQuarterMax;
+  return static_cast<uint16_t>((q * kTicksPerQuarter) & kLimitFieldMask);
+}
+
+// Push the window to the part. Called from the sampling task only.
+bool apply_alert_window() {
+  int16_t lo, hi;
+  bool wanted;
+  taskENTER_CRITICAL(&s_lock);
+  lo = s_win_min_c100;
+  hi = s_win_max_c100;
+  wanted = s_win_wanted;
+  taskEXIT_CRITICAL(&s_lock);
+
+  if (!wanted) return write_u16(kRegConfig, kConfigRun);
+
+  // T_CRIT first: it is the one that is asserted by default, and writing the limits
+  // before the config means the ALERT pin is never briefly enabled against a stale
+  // window that would drive it low for no reason.
+  if (!write_u16(kRegTCrit, limit_from_c100(kCritNeverC100, /*round_down=*/true))) return false;
+  if (!write_u16(kRegTUpper, limit_from_c100(hi, /*round_down=*/true))) return false;
+  if (!write_u16(kRegTLower, limit_from_c100(lo, /*round_down=*/false))) return false;
+  return write_u16(kRegConfig, kConfigAlertEnable);
 }
 
 // --- Discovery ---
@@ -159,6 +249,13 @@ bool find_device() {
 bool configure() {
   if (!write_u16(kRegConfig, kConfigRun)) return false;
   if (!write_u8(kRegResolution, kResolutionFinest)) return false;
+  // A part that has just been found is at its power-on defaults, so a window set
+  // before it was plugged in has to be written again here rather than waiting for
+  // someone to set it a second time.
+  if (!apply_alert_window()) return false;
+  taskENTER_CRITICAL(&s_lock);
+  s_win_dirty = false;
+  taskEXIT_CRITICAL(&s_lock);
   return true;
 }
 
@@ -221,14 +318,41 @@ void sample_task(void*) {
       ESP_LOGI(kTag, "sensor is back");
     }
 
+    bool dirty;
+    taskENTER_CRITICAL(&s_lock);
+    dirty = s_win_dirty;
+    taskEXIT_CRITICAL(&s_lock);
+    if (dirty) {
+      const bool ok = apply_alert_window();
+      taskENTER_CRITICAL(&s_lock);
+      s_win_dirty = !ok;
+      taskEXIT_CRITICAL(&s_lock);
+      if (!ok) ESP_LOGW(kTag, "could not write the alert window; will retry");
+    }
+
     Reading r = latest();
     uint16_t raw = 0;
     if (read_u16(kRegAmbient, &raw)) {
+      const bool was_alert = r.alert;
       r.temp_c100 = raw_to_c100(raw);
       r.valid = true;
       r.uptime_us = esp_timer_get_time();
       r.misses = 0;
       ++r.samples;
+      // Only meaningful once a window has been programmed: until then the limits are
+      // at their power-on zeroes and every one of these bits reads set at room
+      // temperature.
+      bool wanted;
+      taskENTER_CRITICAL(&s_lock);
+      wanted = s_win_wanted;
+      taskEXIT_CRITICAL(&s_lock);
+      r.alert = wanted && (raw & kAmbientAlertMask) != 0;
+      // Logged on the edge, which is what makes the window testable over I2C alone:
+      // warm the sensor past the band and this says so, wire or no wire.
+      if (r.alert != was_alert) {
+        ESP_LOGI(kTag, "hardware alert %s at %.2f C", r.alert ? "asserted" : "cleared",
+                 static_cast<double>(r.temp_c100) / 100.0);
+      }
       // Deliberately silent on a good read. This logged every sample during
       // bring-up, which was the point then; now the screen shows the value live
       // and `recorder` logs one line per stored record, so a line a second only
@@ -239,6 +363,10 @@ void sample_task(void*) {
       ESP_LOGW(kTag, "%u reads failed in a row; rescanning the bus", r.misses);
       r.valid = false;
       r.temp_c100 = kInvalidTempC100;
+      // A part that is gone is not a part that is quiet about the band: an alert
+      // left true here would read as "the temperature is fine" to anything checking
+      // why the post woke.
+      r.alert = false;
       detach();
       since_reprobe_ms = 0;
     }
@@ -284,5 +412,16 @@ Reading latest() {
 }
 
 uint8_t address() { return s_addr; }
+
+void set_alert_window(int16_t min_c100, int16_t max_c100) {
+  taskENTER_CRITICAL(&s_lock);
+  const bool changed =
+      !s_win_wanted || min_c100 != s_win_min_c100 || max_c100 != s_win_max_c100;
+  s_win_min_c100 = min_c100;
+  s_win_max_c100 = max_c100;
+  s_win_wanted = true;
+  if (changed) s_win_dirty = true;
+  taskEXIT_CRITICAL(&s_lock);
+}
 
 }  // namespace thermopost::sensor
