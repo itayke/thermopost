@@ -488,6 +488,16 @@ BatchResult upload_batch() {
   // post should relabel that post, not leave a seam in the middle of its history.
   env.name = settings::get().name;
 
+  // Read now, not when the records were written: this describes the post sending
+  // the batch, not the intervals inside it. A backlog drained after a night offline
+  // therefore carries this morning's pack voltage, which is the useful answer to
+  // "does this post need a visit" and the only one a single field can give.
+  const power::Battery b = power::battery();
+  const bool usable = b.present && b.calibrated;
+  env.batt_mv  = usable ? b.pack_mv : -1;
+  env.batt_pct = usable ? b.pct : -1;
+  env.external = power::on_external_power();
+
   if (hwm >= storage::next_index()) return BatchResult::UpToDate;
 
   auto* recs = static_cast<storage::TempRecord*>(

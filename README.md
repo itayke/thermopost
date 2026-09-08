@@ -970,6 +970,32 @@ whole cadence has been swallowed. And nothing here runs on a clock: the cadence 
 floor checked when a record lands, which is the shape a post that sleeps between
 records will need, because a sleeping post has no clock to run.
 
+**Every batch carries the post's pack voltage, and that is a fleet feature.** The
+envelope sends `batt_mv`, `batt_pct` and `ext` alongside the device id and name, so
+the Sheet can answer "which posts need a visit?" without anyone walking a tank room.
+The Apps Script keeps a `posts` tab — one row per post, rewritten every batch — which
+is the surface a conditional format or a time-driven trigger alerts on; scanning a
+hundred thousand `readings` rows for each post's latest voltage is the query you do
+not want to write.
+
+Three things about it are deliberate:
+
+- **It is in the envelope, not in the record.** `TempRecord` is nailed to 16 bytes
+  because record N lives at offset N × 16, so growing it would invalidate every
+  absolute index and every high-water mark in the fleet. But it would have been the
+  wrong place regardless: a record is a fact about one interval, and the pack is a
+  fact about the post *now*. One value per POST beats sixty near-identical copies,
+  and a backlog drained after a night offline then carries this morning's voltage,
+  which is the useful answer.
+- **Millivolts and percent both, and `null` for neither.** The volts are the
+  measurement; the percent comes off a published lithium curve and is good to about
+  ten points, which is what a dashboard actually thresholds on. A post with no
+  divider or no answer from the ADC sends `null`, not `-1` and not `0` — a flat pack
+  reports `0`, and the two must not look alike to a rule that pages someone.
+- **`ext` is what keeps the alert quiet.** A post at 3.6 V on a charger is
+  recovering; the same post discharging needs a visit. Voltage alone cannot tell
+  them apart, so the useful rule is `batt_pct < 20 AND ext = FALSE`.
+
 **The dedupe key is `device` + `index`, and that is a fleet decision.** Each post
 numbers its records from zero, so an index alone collides across a group on the
 first day. The post's *name* can't be the key either — it is renameable from the
@@ -1172,6 +1198,7 @@ returns.
 | ✅ Built | `cloud` + `shell` — Wi-Fi with unbounded backoff, SNTP clock, `cloud` serial command |
 | ✅ Built | the upload queue — batched POSTs to Apps Script, NVS high-water mark, host-tested JSON |
 | ✅ Built | the upload cadence — separate lit and dark floors on how often the radio comes up, bypassed by a flagged record |
+| ✅ Built | battery in the upload envelope — pack volts, percent and supply per batch, with a `posts` tab to alert from |
 | ✅ Built | the hardware alert window — the MCP9808's own comparator tracks the band, ready for the ALERT wire |
 | ✅ Built | the captive portal, the always-on config form, mDNS, and the Network screen |
 | ✅ Built | the Configure page — a QR that joins the setup AP, closing it on the way out |

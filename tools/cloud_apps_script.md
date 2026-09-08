@@ -30,6 +30,38 @@ A rename retags the queued backlog too, because records are labelled at upload
 rather than at write — which is the behaviour you want: renaming a post should
 relabel that post, not leave a seam in the middle of its history.
 
+## Two tabs, and why
+
+`readings` is the history: one row per record, deduped on `device` + `index`.
+
+`posts` is the fleet's **current state**: one row per post, rewritten on every
+batch, carrying its name, when it was last heard from, its pack voltage and
+whether it is on external power. That tab exists because the alerting question —
+"which posts need a visit?" — is a scan of a handful of rows there rather than of
+a hundred thousand in `readings`. A conditional-format rule or a time-driven
+trigger over `posts` is a few lines; the same thing over the history is not.
+
+It is updated even when every record in the batch was a duplicate. A retried
+batch still proves the post is alive and still carries a current voltage, and a
+fleet view that went stale because one response was lost would raise exactly the
+wrong alarm.
+
+**The battery fields describe the post, not the reading.** They ride in the batch
+envelope rather than in each record, so every row of one batch repeats the same
+value. That is deliberate on the device side — a record is fixed at 16 bytes so
+absolute indices can never shift, and the pack barely moves inside one interval
+anyway. Chart the voltage from `posts`, or from one row per batch; row by row it
+will look like a step function, because it is one.
+
+`batt_mv` and `batt_pct` are **blank when the post has no usable sense** — no
+divider fitted, or an ADC that did not answer. Blank is not zero: a flat pack
+reports `0`, and a post that cannot measure itself reports nothing. Alerting on
+`batt_pct < 20` must not also fire for every post that never had a battery.
+
+**`ext` is what stops the alert being noise.** A post at 3.6 V and charging is
+recovering; a post at 3.6 V and discharging needs a visit. The voltage alone
+cannot tell them apart, so a useful rule is `batt_pct < 20 AND ext = FALSE`.
+
 ## 1. Create the Sheet + script
 
 1. New Google Sheet — this becomes the log.
@@ -54,6 +86,17 @@ const SHEET = 'readings';
 const HEADERS = [
   'device', 'name', 'index', 'epoch', 'datetime', 'uptime_s',
   'mean_c', 'min_c', 'max_c', 'high', 'low', 'fault', 'v',
+  // Appended, never inserted: the dedupe read below addresses columns 1-3 by
+  // number, and an existing Sheet's rows would all shift under their headers.
+  'batt_mv', 'batt_pct', 'ext',
+];
+
+// One row per post, overwritten every batch — the fleet's current state, which is
+// what you actually alert on. Scanning 100k reading rows to find each post's latest
+// battery is the query you do not want to write.
+const STATUS = 'posts';
+const STATUS_HEADERS = [
+  'device', 'name', 'last_seen', 'batt_mv', 'batt_pct', 'ext', 'last_index',
 ];
 
 function doPost(e) {
@@ -68,11 +111,25 @@ function doPost(e) {
       return json_({ ok: false, error: 'missing device id' });
     }
 
+    // Envelope-level, so they describe the POST rather than any reading in it: the
+    // pack barely moves in a minute, and a record is nailed to 16 bytes on the
+    // device precisely so absolute indices never shift. null means the post has no
+    // usable sense — no divider, or an ADC that did not answer — which is a
+    // different thing from a flat pack, and blank keeps it that way in the Sheet.
+    const battMv = (body.batt_mv === null || body.batt_mv === undefined) ? '' : body.batt_mv;
+    const battPct = (body.batt_pct === null || body.batt_pct === undefined) ? '' : body.batt_pct;
+    const ext = body.ext === true;
+
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     let sh = ss.getSheetByName(SHEET);
     if (!sh) {
       sh = ss.insertSheet(SHEET);
       sh.appendRow(HEADERS);
+    } else if (sh.getLastColumn() < HEADERS.length) {
+      // A Sheet created before the battery columns existed. Widening the header row
+      // is the whole migration — old rows simply have those cells blank, which is
+      // the honest reading of "this post never reported it".
+      sh.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
     }
 
     // Existing device+index pairs, for an idempotent write. Only the two key
@@ -102,16 +159,52 @@ function doPost(e) {
       rows.push([
         device, name, r.index, r.epoch || '', dt, r.up,
         r.c, r.min, r.max, r.high, r.low, r.fault, r.v,
+        // Repeated on every row of the batch, because that is what the envelope
+        // means: the post's state when it sent them, not a per-reading measurement.
+        // Chart it from the Posts tab, or from one row per batch, not row by row.
+        battMv, battPct, ext,
       ]);
     });
 
     if (rows.length) {
       sh.getRange(sh.getLastRow() + 1, 1, rows.length, HEADERS.length).setValues(rows);
     }
+
+    // Done even when every record was a duplicate: a retried batch still proves the
+    // post is alive and still carries a current voltage, and a fleet view that went
+    // stale because a response was lost would raise exactly the wrong alarm.
+    upsertStatus_(ss, device, name, battMv, battPct, ext, body.records || []);
+
     return json_({ ok: true, written: rows.length });
   } catch (err) {
     return json_({ ok: false, error: String(err) });
   }
+}
+
+// One row per device in the Posts tab, found by device id and rewritten in place.
+function upsertStatus_(ss, device, name, battMv, battPct, ext, records) {
+  let sh = ss.getSheetByName(STATUS);
+  if (!sh) {
+    sh = ss.insertSheet(STATUS);
+    sh.appendRow(STATUS_HEADERS);
+  }
+  let lastIndex = '';
+  for (let i = 0; i < records.length; i++) {
+    if (lastIndex === '' || records[i].index > lastIndex) lastIndex = records[i].index;
+  }
+  const row = [device, name, new Date(), battMv, battPct, ext, lastIndex];
+
+  const lastRow = sh.getLastRow();
+  if (lastRow > 1) {
+    const ids = sh.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (ids[i][0] === device) {
+        sh.getRange(i + 2, 1, 1, STATUS_HEADERS.length).setValues([row]);
+        return;
+      }
+    }
+  }
+  sh.appendRow(row);
 }
 
 function json_(obj) {

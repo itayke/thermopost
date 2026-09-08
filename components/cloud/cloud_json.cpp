@@ -29,6 +29,18 @@ void temp_field(std::string& out, const char* k, int16_t c100) {
   out += (c100 == kInvalidTempC100) ? "null" : fmt_c100(c100);
 }
 
+// A battery figure, or `null` when the post has no usable reading. Same choice as
+// temp_field above: a sentinel on the wire is a number some reader eventually
+// charts.
+void batt_field(std::string& out, const char* k, int32_t v) {
+  key(out, k);
+  if (v < 0) {
+    out += "null";
+  } else {
+    out += std::to_string(v);
+  }
+}
+
 void str_field(std::string& out, const char* k, const std::string& v) {
   key(out, k);
   out += '"';
@@ -122,6 +134,12 @@ std::string build_payload(const Envelope& env, const RecordJson* recs, size_t n)
   str_field(out, "device", env.device);
   out += ',';
   str_field(out, "name", env.name);
+  out += ',';
+  batt_field(out, "batt_mv", env.batt_mv);
+  out += ',';
+  batt_field(out, "batt_pct", env.batt_pct);
+  out += ',';
+  bool_field(out, "ext", env.external);
   out += ',';
   key(out, "records");
   out += '[';

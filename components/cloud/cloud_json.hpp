@@ -48,10 +48,33 @@ struct RecordJson {
 // changes when someone fixes a typo is not a key. So `device` is derived from
 // the MAC — stable for the life of the board, never edited — and `name` rides
 // along as a display column the Sheet can be filtered and sorted by.
+//
+// The battery fields are here, in the envelope, and NOT in each record — that is
+// the whole point of them. A record is a fact about one interval; the pack is a
+// fact about the post right now. Putting it in TempRecord would also have been
+// impossible without breaking the log: the record is nailed to 16 bytes because
+// record N lives at offset N x 16, so growing it invalidates every absolute index
+// and every cloud high-water mark in the fleet. Here it costs nothing on flash,
+// travels once per POST instead of sixty near-identical times, and is naturally
+// "as of now", which is what an alert wants. The Sheet still gets a usable curve:
+// one point per upload is ample for a pack that discharges over hours.
 struct Envelope {
   std::string token;   // shared secret; a soft gate, see cloud.cpp
   std::string device;  // stable per-device id (MAC hex)
   std::string name;    // human label, mutable, display only
+  // Millivolts at the pack, or negative when there is no usable reading — no
+  // divider, an ADC that did not answer, or a batch built before power::init().
+  // Serializes as JSON null in that case, never as a number a reader could act on.
+  int32_t     batt_mv  = -1;
+  // 0..100, and an estimate rather than a measurement — lithium is nearly flat
+  // through the middle of its range, so this comes off a published curve. Sent
+  // alongside the millivolts rather than instead of them: a fleet dashboard wants
+  // to threshold on a percentage, and anyone who does not trust it has the volts.
+  int32_t     batt_pct = -1;
+  // On external power. The field that stops a fleet alert being noise: a post at
+  // 3.6 V and charging is recovering, a post at 3.6 V and discharging needs a
+  // visit, and the voltage alone cannot tell them apart.
+  bool        external = true;
 };
 
 // Escape a string's contents for embedding between JSON double quotes (does NOT
@@ -74,7 +97,8 @@ std::string fmt_c100(int16_t c100);
 void append_record(std::string& out, const RecordJson& r);
 
 // Build the full request body:
-//   {"token":"…","device":"…","name":"…","records":[ {…}, … ]}
+//   {"token":"…","device":"…","name":"…","batt_mv":…,"batt_pct":…,"ext":…,
+//    "records":[ {…}, … ]}
 std::string build_payload(const Envelope& env, const RecordJson* recs, size_t n);
 
 }  // namespace thermopost::cloud::json
