@@ -465,10 +465,15 @@ void build(lv_obj_t* scr) {
 // ===========================================================================
 namespace recording {
 
+// Wider than kTextMax: this footer formats three spans into one line, and the
+// compiler bounds each at kSpanTextMax whatever the values can really be.
+constexpr size_t kFooterTextMax = 96;
+
 PageChrome   s_page = {};
 StepperState s_interval = {};
 StepperState s_points = {};
 StepperState s_upload = {};
+StepperState s_upload_dark = {};
 
 void format_interval(char* out, size_t n, int16_t index) {
   const int16_t i = static_cast<int16_t>(
@@ -476,36 +481,48 @@ void format_interval(char* out, size_t n, int16_t index) {
   format_span(out, n, kIntervalChoicesS[i]);
 }
 
-// Reads with its label as "Upload every record" / "Upload every 1h", which is the
-// whole sentence rather than a number needing one.
+// "rec" rather than "record": the stepper's value sits between the two discs, and
+// the longer word runs into them.
 void format_upload(char* out, size_t n, int16_t index) {
   const int16_t i = static_cast<int16_t>(
       std::clamp<int16_t>(index, 0, kUploadChoiceCount - 1));
   const uint16_t minutes = kUploadChoicesMin[i];
   if (minutes == 0) {
-    std::snprintf(out, n, "record");
+    std::snprintf(out, n, "rec");
     return;
   }
   format_span(out, n, static_cast<uint32_t>(minutes) * kSecPerMin);
 }
 
-// Both numbers on this page are spans someone is choosing between, so the footer
+// The lag one cadence allows, as the footer says it: zero means the Sheet is never
+// waiting on anything.
+void format_lag(char* out, size_t n, uint16_t minutes) {
+  if (minutes == 0) {
+    std::snprintf(out, n, "live");
+    return;
+  }
+  format_span(out, n, static_cast<uint32_t>(minutes) * kSecPerMin);
+}
+
+// Every number on this page is a span someone is choosing between, so the footer
 // states each as the thing it actually costs: how much history the graph holds, and
-// how stale the Sheet is allowed to get.
+// how stale the Sheet is allowed to get on each side of the screen going dark.
 void refresh_footer() {
   const settings::Settings s = settings::get();
   char span[kSpanTextMax];
   format_span(span, sizeof(span),
               static_cast<uint32_t>(s.graph_points) * s.interval_s);
-  char text[kTextMax];
-  if (s.upload_every_min == 0) {
+  char text[kFooterTextMax];
+  if (s.upload_every_min == 0 && s.upload_dark_min == 0) {
     std::snprintf(text, sizeof(text), "the graph spans %s", span);
   } else {
-    char lag[kSpanTextMax];
-    format_span(lag, sizeof(lag), static_cast<uint32_t>(s.upload_every_min) * kSecPerMin);
-    // ASCII separator: LVGL's built-in Montserrat carries 0x20-0x7F plus a handful
+    char lit[kSpanTextMax];
+    char dark[kSpanTextMax];
+    format_lag(lit, sizeof(lit), s.upload_every_min);
+    format_lag(dark, sizeof(dark), s.upload_dark_min);
+    // ASCII separators: LVGL's built-in Montserrat carries 0x20-0x7F plus a handful
     // of symbols, and a middle dot is not among them — it would draw as a blank box.
-    std::snprintf(text, sizeof(text), "graph %s, Sheet up to %s behind", span, lag);
+    std::snprintf(text, sizeof(text), "graph %s, Sheet %s, %s when dark", span, lit, dark);
   }
   lv_label_set_text(s_page.footer, text);
 }
@@ -525,15 +542,23 @@ void on_upload_change() {
   refresh_footer();
 }
 
+void on_upload_dark_change() {
+  settings::set_upload_dark_min(kUploadChoicesMin[s_upload_dark.value]);
+  refresh_footer();
+}
+
 void load() {
   const settings::Settings s = settings::get();
   s_interval.value = nearest_index(kIntervalChoicesS, kIntervalChoiceCount, s.interval_s);
   s_points.value = static_cast<int16_t>(s.graph_points);
   s_upload.value =
       nearest_index(kUploadChoicesMin, kUploadChoiceCount, s.upload_every_min);
+  s_upload_dark.value =
+      nearest_index(kUploadChoicesMin, kUploadChoiceCount, s.upload_dark_min);
   stepper_refresh(&s_interval);
   stepper_refresh(&s_points);
   stepper_refresh(&s_upload);
+  stepper_refresh(&s_upload_dark);
   refresh_footer();
 }
 
@@ -558,6 +583,12 @@ void build(lv_obj_t* scr) {
   s_upload.format = format_upload;
   s_upload.on_change = on_upload_change;
 
+  s_upload_dark.min = 0;
+  s_upload_dark.max = kUploadChoiceCount - 1;
+  s_upload_dark.step = 1;
+  s_upload_dark.format = format_upload;
+  s_upload_dark.on_change = on_upload_dark_change;
+
   lv_obj_t* fade[nav::kMaxFadeWidgets];
   int n = 0;
   fade[n++] = s_page.back.btn;
@@ -572,6 +603,9 @@ void build(lv_obj_t* scr) {
   fade[n++] = cap;
   fade[n++] = build_stepper_cell(s_page.group, kColLeftCx, kRow2Y, "Upload every",
                                  &s_upload, &cap);
+  fade[n++] = cap;
+  fade[n++] = build_stepper_cell(s_page.group, kColRightCx, kRow2Y, "When dark",
+                                 &s_upload_dark, &cap);
   fade[n++] = cap;
 
   load();

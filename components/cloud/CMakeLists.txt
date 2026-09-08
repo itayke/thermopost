@@ -19,6 +19,7 @@ idf_component_register(
         nvs_flash         # endpoint + high-water mark (and the driver's creds)
         console           # esp_console — the `cloud` command
         shell             # ours: the REPL those commands land in
+        power             # the idle tier picks which upload cadence applies
         settings          # the post's name, sent with every batch
         storage           # the record log the queue drains
 )

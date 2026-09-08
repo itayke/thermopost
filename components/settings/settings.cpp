@@ -21,6 +21,7 @@ constexpr const char* kKeyMax      = "hi";
 constexpr const char* kKeyHyst     = "hy";
 constexpr const char* kKeyPoints   = "gp";
 constexpr const char* kKeyUpload   = "ue";
+constexpr const char* kKeyUploadDark = "ud";
 constexpr const char* kKeyUnit     = "un";
 constexpr const char* kKeySound    = "sn";
 constexpr const char* kKeyVolume   = "vo";
@@ -73,6 +74,7 @@ Settings s_cur = {
     .hysteresis_c100 = kHysteresisDefaultC100,
     .graph_points    = kGraphPointsDefault,
     .upload_every_min = kUploadEveryDefaultMin,
+    .upload_dark_min  = kUploadDarkDefaultMin,
     .unit            = TempUnit::Fahrenheit,
     .sound_enabled   = true,
     .volume_pct      = kVolumeDefaultPct,
@@ -202,6 +204,7 @@ esp_err_t init() {
   if (nvs_get_u16(h, kKeyHyst, &u16) == ESP_OK) s_cur.hysteresis_c100 = clamp_hysteresis(static_cast<int16_t>(u16));
   if (nvs_get_u16(h, kKeyPoints, &u16) == ESP_OK) s_cur.graph_points = clamp_points(u16);
   if (nvs_get_u16(h, kKeyUpload, &u16) == ESP_OK) s_cur.upload_every_min = clamp_upload(u16);
+  if (nvs_get_u16(h, kKeyUploadDark, &u16) == ESP_OK) s_cur.upload_dark_min = clamp_upload(u16);
   if (nvs_get_u8(h, kKeyUnit, &u8) == ESP_OK && u8 <= 1) s_cur.unit = static_cast<TempUnit>(u8);
   if (nvs_get_u8(h, kKeySound, &u8) == ESP_OK) s_cur.sound_enabled = (u8 != 0);
   if (nvs_get_u8(h, kKeyVolume, &u8) == ESP_OK) s_cur.volume_pct = clamp_volume(u8);
@@ -231,13 +234,12 @@ esp_err_t init() {
   nvs_close(h);
 
   s_inited = true;
-  char upload_text[16];
-  if (s_cur.upload_every_min == 0) {
-    std::snprintf(upload_text, sizeof(upload_text), "every record");
-  } else {
-    std::snprintf(upload_text, sizeof(upload_text), "every %umin",
-                  static_cast<unsigned>(s_cur.upload_every_min));
-  }
+  // Sized for what the compiler must assume — ten digits per %u — not for the four
+  // that clamp_upload() can actually produce.
+  char upload_text[64];
+  std::snprintf(upload_text, sizeof(upload_text), "%umin lit / %umin dark (0=every)",
+                static_cast<unsigned>(s_cur.upload_every_min),
+                static_cast<unsigned>(s_cur.upload_dark_min));
   ESP_LOGI(kTag, "'%s': interval %us, band %.2f..%.2f C (hyst %.2f), %u graph points, "
                  "upload %s, %s, sound %s @ %u%%",
            s_cur.name,
@@ -296,6 +298,13 @@ esp_err_t set_upload_every_min(uint16_t v) {
   if (v == s_cur.upload_every_min) return ESP_OK;
   s_cur.upload_every_min = v;
   return persist<uint16_t>(kKeyUpload, v) ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t set_upload_dark_min(uint16_t v) {
+  v = clamp_upload(v);
+  if (v == s_cur.upload_dark_min) return ESP_OK;
+  s_cur.upload_dark_min = v;
+  return persist<uint16_t>(kKeyUploadDark, v) ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t set_unit(TempUnit u) {

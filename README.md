@@ -639,7 +639,7 @@ rather than sitting flush left with a hole beside it.
 | page | controls | footer says |
 |---|---|---|
 | Temperature | alarm below, alarm above, recovery margin, **unit** | the exact stored hundredths |
-| Recording | interval, points plotted, **upload every** | the graph's span, and how stale the Sheet may get |
+| Recording | interval, points plotted, **upload every**, **when dark** | the graph's span, and how stale the Sheet may get |
 | Sound | alarm sound on/off, volume, **test alarm** | whether alarms will be audible |
 | Power | mode, sleep delay, **battery volts** | what this mode actually does, or that sleep is not armed |
 | Network | Configure, Forget; link, address and sync status above | where the name and Sheet URL are edited |
@@ -924,22 +924,37 @@ mark only advances on a confirmed `"ok":true`, so a response lost in transit
 costs a repeated batch rather than a hole in the history.
 
 **How often the radio comes up is a setting, because it is the biggest power
-decision the post makes.** `Upload every` on the Recording page is the floor: at its
-default, *every record*, the post uploads a minute after it wakes up and every minute
-after that, which is right on a bench and wrong on a battery. Association, DHCP and a
-TLS handshake cost far more than taking a reading — the expense is per *session*, not
-per POST, since the drain loop keeps sending batches until the queue is empty once the
-link is up. So an hourly cadence costs roughly a twelfth of the radio time of a
-five-minute one, and `kBatchSize` is already one hour of history per request.
+decision the post makes.** Association, DHCP and a TLS handshake cost far more than
+taking a reading, and the expense is per *session*, not per POST — the drain loop
+keeps sending batches until the queue is empty once the link is up. So an hourly
+cadence costs roughly a twelfth of the radio time of a five-minute one, and
+`kBatchSize` is already one hour of history per request.
 
-Two details make the setting behave:
+The Recording page carries two figures, `Upload every` and `When dark`, and **the
+split is on the idle tier, not on the supply.** That matters. `on_external_power()` is
+a heuristic that cannot tell a just-unplugged pack from a charging one for minutes,
+while the tier is a fact — and it is the better question anyway: what makes a radio
+session expensive is the post being otherwise idle, not where its current comes from.
+A lit post is burning tens of milliamps regardless and one more handshake is marginal;
+a dark one is doing almost nothing else, so the handshake is the entire budget.
 
-- **It is minutes, not a record count.** A count would mean something different on
+Both default to *every record*, which is exactly the old behaviour: nothing changes
+until someone deliberately slows one down, and a bench post never has to think about
+it. A post going out on a battery gets `When dark` raised to an hour and leaves the
+other alone.
+
+Three details make it behave:
+
+- **They are minutes, not a record count.** A count would mean something different on
   every post in a fleet, because the span is count × interval — "every 60 records" is
   an hour at the default cadence and two and a half days at the slowest one.
-- **A flagged record ignores it entirely.** A record that breached the band, or that
-  the sensor failed to produce, is uploaded the moment it is written. A saving that
-  also delayed the alarm would be the one saving not worth making.
+- **A flagged record ignores both.** A record that breached the band, or that the
+  sensor failed to produce, is uploaded the moment it is written. A saving that also
+  delayed the alarm would be the one saving not worth making.
+- **Waking drains the backlog.** A pending deadline is pulled in whenever the
+  applicable cadence gets shorter — which is what happens when a dark post lights up —
+  so walking over to a post gives you a current Sheet rather than the schedule it went
+  dark under.
 
 The deadline advances from the previous deadline rather than from when a drain
 finished, so the seconds an association and a handshake take don't accumulate until a
@@ -1148,7 +1163,7 @@ returns.
 | ✅ Verified | `audio` — ES8311 over I²S, beeping alarm tone out of the speaker, driven from the Sound page's test button |
 | ✅ Built | `cloud` + `shell` — Wi-Fi with unbounded backoff, SNTP clock, `cloud` serial command |
 | ✅ Built | the upload queue — batched POSTs to Apps Script, NVS high-water mark, host-tested JSON |
-| ✅ Built | the upload cadence — a floor on how often the radio comes up, bypassed by a flagged record |
+| ✅ Built | the upload cadence — separate lit and dark floors on how often the radio comes up, bypassed by a flagged record |
 | ✅ Built | the hardware alert window — the MCP9808's own comparator tracks the band, ready for the ALERT wire |
 | ✅ Built | the captive portal, the always-on config form, mDNS, and the Network screen |
 | ✅ Built | the Configure page — a QR that joins the setup AP, closing it on the way out |

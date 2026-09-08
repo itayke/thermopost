@@ -2,6 +2,7 @@
 
 #include "cloud_json.hpp"
 #include "cloud_portal.hpp"
+#include "power.hpp"
 #include "settings.hpp"
 #include "shell.hpp"
 #include "storage.hpp"
@@ -553,15 +554,32 @@ BatchResult upload_batch() {
 
 int64_t now_ms() { return esp_timer_get_time() / kUsPerMs; }
 
+// Which of the two cadences applies right now.
+//
+// Keyed on the idle tier, not on the supply. power::on_external_power() is a
+// heuristic that cannot tell a just-unplugged pack from a charging one for minutes;
+// the tier is a fact. It is also the better question — what makes a radio session
+// expensive is the post being otherwise idle, not where its current comes from.
+//
+// Dark rather than Asleep, so the behaviour exists and can be watched on a post that
+// only blanks its panel, long before one that sleeps. Safe before power::init(),
+// which answers Active.
+uint16_t cadence_min() {
+  const settings::Settings cfg = settings::get();
+  return power::tier() >= power::Tier::Dark ? cfg.upload_dark_min : cfg.upload_every_min;
+}
+
 bool upload_due() {
-  const uint16_t cadence_min = settings::get().upload_every_min;
-  if (cadence_min == 0) return true;
+  const uint16_t cadence = cadence_min();
+  if (cadence == 0) return true;
   const int64_t now = now_ms();
-  const int64_t cadence_ms = static_cast<int64_t>(cadence_min) * kMsPerMin;
-  // Pulls a pending deadline in when the cadence is shortened from the menu, so the
-  // edit applies now rather than after the old, longer one runs out — the same
-  // promptness `recorder` gives an edited interval. Lengthening is left alone: the
-  // next drain is what pushes the deadline out.
+  const int64_t cadence_ms = static_cast<int64_t>(cadence) * kMsPerMin;
+  // Pulls a pending deadline in whenever the applicable cadence is shorter than what
+  // is outstanding — an edit from the menu, and also a post waking up, where the
+  // dark hour gives way to the lit figure. So walking up to a post that has been
+  // asleep drains its backlog promptly rather than on the schedule it went dark
+  // under, which is what someone standing in front of it expects. Lengthening is left
+  // alone: the next drain is what pushes the deadline out.
   if (s_next_upload_ms > now + cadence_ms) s_next_upload_ms = now + cadence_ms;
   return now >= s_next_upload_ms;
 }
@@ -572,9 +590,9 @@ bool upload_due() {
 // deadline already in the past — a post that spent the night offline — is resynced
 // to now instead of being caught up one cadence at a time.
 void advance_upload_deadline() {
-  const uint16_t cadence_min = settings::get().upload_every_min;
-  if (cadence_min == 0) { s_next_upload_ms = 0; return; }
-  const int64_t cadence_ms = static_cast<int64_t>(cadence_min) * kMsPerMin;
+  const uint16_t cadence = cadence_min();
+  if (cadence == 0) { s_next_upload_ms = 0; return; }
+  const int64_t cadence_ms = static_cast<int64_t>(cadence) * kMsPerMin;
   const int64_t now = now_ms();
   s_next_upload_ms += cadence_ms;
   if (s_next_upload_ms <= now) s_next_upload_ms = now + cadence_ms;
