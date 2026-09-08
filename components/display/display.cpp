@@ -15,6 +15,7 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_log.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -300,6 +301,13 @@ constexpr const char* kShotLinePrefix = "S:";
 // a wedged UI reports itself rather than hanging the console.
 constexpr uint32_t kShotLockTimeoutMs = 1000;
 
+// A frame is ~200 KB, which leaves the USB TX path saturated. Returning into the
+// REPL there means its prompt — and, in a full terminal session, the cursor query
+// it writes before reading — go out into a full FIFO and get dropped, after which
+// the console ignores typed commands until it recovers on its own. Waiting for the
+// FIFO to drain first costs nothing on a command that already took a second.
+constexpr uint32_t kShotDrainMs = 2000;
+
 int cmd_shot(int /*argc*/, char** /*argv*/) {
   if (s_lvgl_disp == nullptr) {
     std::printf("display is not up\n");
@@ -351,6 +359,7 @@ int cmd_shot(int /*argc*/, char** /*argv*/) {
   }
   std::printf("# shot end\n");
   std::fflush(stdout);
+  usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(kShotDrainMs));
 
   std::free(line);
   // Freed without the lock: nothing else has ever seen this buffer, and with

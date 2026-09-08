@@ -20,6 +20,7 @@ import argparse
 import base64
 import binascii
 import os
+import re
 import struct
 import sys
 import time
@@ -55,6 +56,14 @@ UNKNOWN_RETRIES = 1
 
 DRAIN_MAX_S = 5.0   # bound on waiting for a board to stop talking
 
+# The first bytes written after this port is opened are dropped — measured on the
+# board, repeatedly: `shot` arrives as `t` and `power` as `ower`, which is what
+# produced every "Unrecognized command" this script used to report as old
+# firmware. So the first thing sent is a bare newline whose loss costs nothing;
+# by the time the real command goes out the link is awake. The re-send loop is
+# still the backstop, this just stops it being needed on every single run.
+PRIME_S = 0.25
+
 # The protocol, matched to the constants in display.cpp.
 HEADER_PREFIX = "# shot "
 END_MARKER = "# shot end"
@@ -72,6 +81,23 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 # Git-ignored, so a capture is scratch until someone commits it by path.
 DEFAULT_DIR = "captures"
+
+# --- Pretending to be a terminal -------------------------------------------
+# The board's line editor is linenoise, and in its full (non-dumb) mode it asks
+# the terminal where the cursor is — getColumns() does it on every refresh — by
+# writing ESC[6n and then reading stdin one byte at a time until an "R" arrives.
+# A client that never answers is not merely ignored: those reads eat whatever
+# arrives next, so `shot` loses its first characters and the board runs `t` and
+# reports an unrecognized command. Answering unblocks it, which is all a real
+# terminal is doing here.
+CURSOR_QUERY = b"\x1b[6n"
+TERMINAL_COLUMNS = 80
+CURSOR_REPLY = b"\x1b[1;%dR" % TERMINAL_COLUMNS
+
+# ESC[5n, the probe linenoise sends once at startup to decide between full and
+# dumb mode, is deliberately NOT answered: silence picks dumb mode, which has no
+# escape sequences and no cursor questions, and is what a script wants.
+ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
 
 
 def find_port():
@@ -95,6 +121,38 @@ def diagnose(header, seen):
             "If there is no `post>` prompt among those, the REPL is not up.")
 
 
+def pump(ser, verbose):
+    """Read whatever has arrived, answer terminal queries, return whole lines.
+
+    Byte-oriented rather than readline()-based because ESC[6n carries no newline:
+    waiting for one would leave the board's line editor blocked on an answer that
+    is sitting unread in this end's buffer.
+    """
+    chunk = ser.read(ser.in_waiting or 1)
+    if not chunk:
+        return []
+    pump.buf += chunk
+    while CURSOR_QUERY in pump.buf:
+        pump.buf = pump.buf.replace(CURSOR_QUERY, b"", 1)
+        ser.write(CURSOR_REPLY)
+        ser.flush()
+    lines = []
+    while b"\n" in pump.buf:
+        raw, pump.buf = pump.buf.split(b"\n", 1)
+        # Stripped before anything looks at it, and before anything prints it: the
+        # board's own output carries colour codes and cursor questions, and echoing
+        # those to a real terminal makes *it* answer, into whatever shell comes next.
+        line = ANSI.sub(b"", raw).decode("utf-8", "replace").strip()
+        if line:
+            if verbose:
+                print(f"< {line}", file=sys.stderr)
+            lines.append(line)
+    return lines
+
+
+pump.buf = b""
+
+
 def drain(ser):
     """Read until the board stops talking, so it is never left mid-dump.
 
@@ -104,7 +162,8 @@ def drain(ser):
     """
     end = time.monotonic() + DRAIN_MAX_S
     while time.monotonic() < end:
-        if not ser.read(4096):
+        # Still answering while draining: a board mid-refresh is waiting on one.
+        if not pump(ser, False):
             return
 
 
@@ -118,6 +177,11 @@ def capture(port, verbose=False):
         # time. That matters more than it sounds: a reset would mean this only ever
         # captures the screen the post boots into, and never the one you navigated to.
         ser.reset_input_buffer()
+        pump.buf = b""
+        ser.write(b"\r\n")        # sacrificial: an empty line only reprints the prompt
+        ser.flush()
+        time.sleep(PRIME_S)
+        drain(ser)
 
         deadline = time.monotonic() + CAPTURE_TIMEOUT_S
         next_send = 0.0
@@ -126,60 +190,58 @@ def capture(port, verbose=False):
         header = None
         chunks = []
         seen = []
+        finished = False
         try:
-            while time.monotonic() < deadline:
+            while not finished and time.monotonic() < deadline:
                 now = time.monotonic()
                 # Silence is the precondition, not just the clock: re-sending into a
-                # board that is mid-frame is what queues a dump nobody collects.
+                # board that is mid-frame queues a dump nobody collects.
                 if header is None and now >= next_send and now - last_rx >= QUIET_S:
                     ser.write(b"shot\r\n")
                     ser.flush()
                     next_send = now + RESEND_EVERY_S
-                line = ser.readline().decode("utf-8", "replace").strip()
-                if not line:
+                batch = pump(ser, verbose)
+                if not batch:
                     continue
                 last_rx = time.monotonic()
-                if verbose:
-                    print(f"< {line}", file=sys.stderr)
-                # Kept for the error path: a board that answered something is a very
-                # different problem from a board that said nothing at all.
-                if len(seen) < DIAGNOSTIC_LINES:
-                    seen.append(line)
-                if UNKNOWN_COMMAND in line:
-                    unknown += 1
-                    if unknown > UNKNOWN_RETRIES:
-                        raise RuntimeError(
-                            "the board refused `shot` twice. Either this firmware "
-                            "predates the command, or the console is not accepting "
-                            "input cleanly — power-cycle it and try again.")
-                    next_send = 0.0   # try once more; one mangled line is not proof
-                    continue
-                # Everything unmarked is skipped on purpose: the REPL echoes the
-                # command, and ESP_LOG shares this one channel, so log lines land in
-                # the middle of the pixels and must not be mistaken for them.
-                #
-                # End and abort are tested before the header, not after: they share
-                # its "# shot " prefix, so the other order reads the last line of a
-                # good capture as the first line of a new one and drops the frame.
-                if line.startswith(END_MARKER):
-                    break
-                if line.startswith(ABORT_MARKER):
-                    raise RuntimeError("the board aborted the capture mid-frame")
-                if line.startswith(HEADER_PREFIX):
-                    header = line[len(HEADER_PREFIX):].split()
-                    chunks = []
-                elif line.startswith(DATA_PREFIX) and header is not None:
-                    chunks.append(line[len(DATA_PREFIX):])
-            else:
-                raise RuntimeError(diagnose(header, seen))
+
+                for line in batch:
+                    # Kept for the error path: a board that answered something is a
+                    # very different problem from one that said nothing at all.
+                    if len(seen) < DIAGNOSTIC_LINES:
+                        seen.append(line)
+
+                    # End and abort are tested before the header, not after: they
+                    # share its "# shot " prefix, so the other order reads the last
+                    # line of a good capture as the first of a new one.
+                    if line.startswith(END_MARKER):
+                        finished = True
+                        break
+                    if line.startswith(ABORT_MARKER):
+                        raise RuntimeError("the board aborted the capture mid-frame")
+                    if line.startswith(HEADER_PREFIX):
+                        header = line[len(HEADER_PREFIX):].split()
+                        chunks = []
+                    elif line.startswith(DATA_PREFIX) and header is not None:
+                        chunks.append(line[len(DATA_PREFIX):])
+                    elif UNKNOWN_COMMAND in line:
+                        unknown += 1
+                        if unknown > UNKNOWN_RETRIES:
+                            raise RuntimeError(
+                                "the board refused `shot` twice. Either this firmware "
+                                "predates the command, or its console is not reading "
+                                "input cleanly — power-cycle it and try again.")
+                        next_send = 0.0   # one mangled line is not proof
+                    # Anything else is skipped on purpose: the REPL echoes the
+                    # command, and ESP_LOG shares this one channel, so log lines
+                    # land among the pixels and must not be mistaken for them.
         finally:
             # Always, including on the way out of a failure: a board left printing
             # into a closed port is the next run's mystery.
             drain(ser)
 
-        if header is None:
-            raise RuntimeError(diagnose(header, seen))
-
+    if not finished or header is None:
+        raise RuntimeError(diagnose(header, seen))
     if len(header) != 4:
         raise RuntimeError(f"unreadable header: {' '.join(header)!r}")
     width, height, stride = (int(v) for v in header[:3])

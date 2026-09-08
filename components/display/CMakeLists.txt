@@ -14,6 +14,7 @@ idf_component_register(
         espressif__esp_lcd_ili9341
     PRIV_REQUIRES
         console             # the `shot` screenshot command
+        esp_driver_usb_serial_jtag  # draining TX after a frame
         mbedtls             # its base64 encoder
     # lv_port_mem.c provides LVGL's lv_*_core allocator overrides
     # (LV_USE_CUSTOM_MALLOC). LVGL doesn't depend on this component, so without
