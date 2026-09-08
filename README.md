@@ -938,10 +938,18 @@ session expensive is the post being otherwise idle, not where its current comes 
 A lit post is burning tens of milliamps regardless and one more handshake is marginal;
 a dark one is doing almost nothing else, so the handshake is the entire budget.
 
-Both default to *every record*, which is exactly the old behaviour: nothing changes
-until someone deliberately slows one down, and a bench post never has to think about
-it. A post going out on a battery gets `When dark` raised to an hour and leaves the
-other alone.
+`Upload every` defaults to *every record* — a post someone is standing in front of
+should have a Sheet that matches its screen. `When dark` defaults to **15 minutes**.
+Zero would have been the change-nothing default, but it is the wrong one to ship: the
+dark cadence exists precisely for the deployment nobody is going to tune, and a fleet
+left at its defaults would spend its whole radio budget on a Sheet nobody is watching.
+Fifteen minutes is short enough that a post still looks alive to someone checking on
+it, and long enough to cut the sessions by more than an order of magnitude at the
+default record interval.
+
+So the upgrade is not behaviour-neutral, deliberately: an existing post will start
+batching once its screen goes out. Anything that actually needs to be seen sooner is
+flagged, and flagged records ignore the cadence entirely.
 
 Three details make it behave:
 

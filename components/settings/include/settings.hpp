@@ -75,14 +75,22 @@ constexpr uint16_t kGraphPointsDefault = 120;
 // cadence is roughly a twelfth of the radio time of a five-minute one, and cloud.cpp's
 // kBatchSize is already one hour of history per request.
 //
-// Both default to zero, which is "send every record" and exactly today's behaviour:
-// nothing changes until someone deliberately slows one down, and a bench post never
-// has to think about it. A post going out on a battery gets the dark figure raised.
+// The lit figure defaults to zero — "send every record" — because a post someone is
+// standing in front of should have a Sheet that matches the screen.
 //
-// A record that breached the band or failed to read ignores both and goes at once.
-// A saving that also delayed the alarm would be the one worth refusing.
+// The dark one defaults to a quarter of an hour. Zero would have been the
+// change-nothing default, but it is the wrong one to ship: the dark cadence exists
+// precisely for the deployment nobody is going to tune, and a fleet left at its
+// defaults is a fleet spending its whole radio budget on a Sheet nobody is watching.
+// Fifteen minutes is short enough that a post looks alive to someone checking on it
+// and long enough to cut the sessions by more than an order of magnitude at the
+// default record interval. Anything that actually needs to be seen sooner is flagged,
+// and flagged records ignore this entirely.
+//
+// A record that breached the band or failed to read goes at once, whichever figure
+// is in force. A saving that also delayed the alarm would be the one worth refusing.
 constexpr uint16_t kUploadEveryDefaultMin = 0;
-constexpr uint16_t kUploadDarkDefaultMin  = 0;
+constexpr uint16_t kUploadDarkDefaultMin  = 15;
 // A day. Longer is a Sheet nobody would trust to be current, and the backlog is
 // safe on flash either way.
 constexpr uint16_t kUploadEveryMaxMin = 1440;

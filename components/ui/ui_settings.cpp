@@ -124,6 +124,19 @@ constexpr int16_t kUploadChoiceCount =
 static_assert(kUploadChoicesMin[kUploadChoiceCount - 1] <= settings::kUploadEveryMaxMin,
               "the slowest offered upload cadence is above what settings accepts");
 
+// A default the stepper cannot land on would show one value while NVS held another,
+// until the first tap quietly resolved the disagreement.
+constexpr bool upload_choice_exists(uint16_t v) {
+  for (int16_t i = 0; i < kUploadChoiceCount; ++i) {
+    if (kUploadChoicesMin[i] == v) return true;
+  }
+  return false;
+}
+static_assert(upload_choice_exists(settings::kUploadEveryDefaultMin),
+              "the lit upload default is not one of the offered cadences");
+static_assert(upload_choice_exists(settings::kUploadDarkDefaultMin),
+              "the dark upload default is not one of the offered cadences");
+
 constexpr uint16_t kGraphPointsStep = 30;
 constexpr uint8_t  kVolumeStepPct   = 5;
 
