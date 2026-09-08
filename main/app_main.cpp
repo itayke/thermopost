@@ -113,6 +113,9 @@ extern "C" void app_main(void) {
   // After the screens, so a slow radio can never delay the first frame, and
   // before the backlight, so the boot log still reads top to bottom.
   step("shell", shell::init());
+  // Not part of display::init(): esp_console has no command list until the REPL
+  // above creates one, so `shot` has to be registered on this side of it.
+  display::register_console();
   // Non-fatal for the same reason the sensor is: a post with no network still
   // samples, logs and alarms. It just cannot stamp a wall-clock time or upload —
   // and this board has no RTC, so the clock is genuinely the radio's to bring.

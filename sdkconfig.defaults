@@ -79,6 +79,13 @@ CONFIG_LV_USE_CUSTOM_MALLOC=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_42=y
 
+# --- LVGL snapshot, for the `shot` console command ---
+# Re-renders the active screen into one full-size buffer so it can be dumped as
+# base64 and turned into a PNG on the host (tools/screenshot.py). There is no
+# framebuffer to read instead: the draw buffers are 40 lines each and the only
+# whole image lives in the ILI9341, which this wiring cannot read back.
+CONFIG_LV_USE_SNAPSHOT=y
+
 # --- LVGL QR code widget ---
 # The Configure page draws a WIFI: QR that joins the post's setup AP, so a phone
 # provisions it without anyone typing a network name. The encoder is vendored with

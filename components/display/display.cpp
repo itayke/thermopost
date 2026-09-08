@@ -1,11 +1,15 @@
 #include "display.hpp"
 
+#include <cstdio>
+#include <cstdlib>
+
 #include "board_pins.hpp"
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
+#include "esp_console.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_ili9341.h"
 #include "esp_lcd_panel_io.h"
@@ -15,6 +19,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "mbedtls/base64.h"
 
 namespace thermopost::display {
 
@@ -265,6 +270,95 @@ esp_err_t init_lvgl() {
   return task_ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+// --- Screenshots ------------------------------------------------------------
+// `shot` on the console prints the active screen as base64 and
+// tools/screenshot.py turns it back into a PNG. The point is documentation: a
+// real 320x240 capture beats a photograph of a lit panel held at an angle.
+//
+// A re-render rather than a framebuffer read, because there is no framebuffer to
+// read — the draw buffers above are 40 lines each, and the only complete image
+// lives inside the ILI9341, which this wiring cannot read back. lv_snapshot_take()
+// draws the screen again into a buffer of its own, so a post nobody is
+// screenshotting pays nothing for this beyond the code.
+constexpr lv_color_format_t kShotFormat     = LV_COLOR_FORMAT_RGB565;
+constexpr const char*       kShotFormatName = "rgb565";
+
+// Base64 only concatenates on 3-byte boundaries — a chunk size that is not a
+// multiple of 3 puts padding in the middle of the stream, where a decoder stops.
+// 768 bytes encode to exactly 1024 characters and divide a 320x240 frame into 200
+// whole lines.
+constexpr size_t kShotChunkBytes = 768;
+constexpr size_t kShotChunkChars = kShotChunkBytes / 3 * 4;
+static_assert(kShotChunkBytes % 3 == 0, "base64 concatenates only on 3-byte bounds");
+
+// Data lines carry a marker because the REPL and ESP_LOG share the one USB serial
+// channel: an INFO line landing between two chunks would corrupt the image, and a
+// prefix lets the host keep only what it asked for.
+constexpr const char* kShotLinePrefix = "S:";
+
+// Long enough to outlast a frame the LVGL task is mid-render on, short enough that
+// a wedged UI reports itself rather than hanging the console.
+constexpr uint32_t kShotLockTimeoutMs = 1000;
+
+int cmd_shot(int /*argc*/, char** /*argv*/) {
+  if (s_lvgl_disp == nullptr) {
+    std::printf("display is not up\n");
+    return 1;
+  }
+  if (!lock(kShotLockTimeoutMs)) {
+    std::printf("could not take the LVGL lock\n");
+    return 1;
+  }
+  // LVGL's own state, not the panel's, so a screen the idle ladder has blanked
+  // still captures exactly what a wake would put back on it.
+  lv_draw_buf_t* shot = lv_snapshot_take(lv_screen_active(), kShotFormat);
+  unlock();
+  if (shot == nullptr) {
+    std::printf("snapshot failed — no PSRAM for a %dx%d frame?\n",
+                board::kLcdHRes, board::kLcdVRes);
+    return 1;
+  }
+
+  char* line = static_cast<char*>(std::malloc(kShotChunkChars + 1));
+  if (line == nullptr) {
+    lv_draw_buf_destroy(shot);
+    std::printf("out of memory for the encode buffer\n");
+    return 1;
+  }
+
+  // Stride goes in the header rather than being assumed equal to the row: LVGL
+  // pads rows to CONFIG_LV_DRAW_BUF_STRIDE_ALIGN, and a host that guessed would
+  // shear the image by a pixel per row the day that value changes.
+  const uint32_t stride = shot->header.stride;
+  const uint32_t bytes  = stride * shot->header.h;
+  std::printf("# shot %u %u %u %s\n", static_cast<unsigned>(shot->header.w),
+              static_cast<unsigned>(shot->header.h), static_cast<unsigned>(stride),
+              kShotFormatName);
+
+  // Encoded off the LVGL lock: the dump takes long enough that holding it would
+  // freeze the UI for the whole transfer.
+  for (uint32_t off = 0; off < bytes; off += kShotChunkBytes) {
+    const size_t left = bytes - off;
+    const size_t n    = left < kShotChunkBytes ? left : kShotChunkBytes;
+    size_t written = 0;
+    if (mbedtls_base64_encode(reinterpret_cast<unsigned char*>(line), kShotChunkChars + 1,
+                              &written, shot->data + off, n) != 0) {
+      std::printf("# shot abort\n");
+      break;
+    }
+    line[written] = '\0';
+    std::printf("%s%s\n", kShotLinePrefix, line);
+  }
+  std::printf("# shot end\n");
+  std::fflush(stdout);
+
+  std::free(line);
+  // Freed without the lock: nothing else has ever seen this buffer, and with
+  // LV_USE_CUSTOM_MALLOC the destroy is a heap_caps_free (lv_port_mem.c).
+  lv_draw_buf_destroy(shot);
+  return 0;
+}
+
 }  // namespace
 
 esp_err_t init() {
@@ -279,6 +373,18 @@ esp_err_t init() {
 }
 
 lv_display_t* lvgl_display() { return s_lvgl_disp; }
+
+esp_err_t register_console() {
+  // Trailing members left defaulted for the same reason power.cpp leaves them:
+  // esp_console_cmd_t has grown fields across IDF releases.
+  const esp_console_cmd_t cmd = {
+      .command = "shot",
+      .help = "print the active screen as base64; see tools/screenshot.py",
+      .hint = nullptr,
+      .func = &cmd_shot,
+  };
+  return esp_console_cmd_register(&cmd);
+}
 
 bool lock(uint32_t timeout_ms) {
   if (s_lvgl_mutex == nullptr) return false;

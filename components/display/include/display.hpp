@@ -14,6 +14,14 @@ esp_err_t init();
 // LVGL display handle. Valid only after a successful init().
 lv_display_t* lvgl_display();
 
+// Register the `shot` console command, which prints the active screen as base64
+// for tools/screenshot.py to turn into a PNG.
+//
+// Separate from init() because it has to run *after* shell::init(): the console's
+// command list does not exist until the REPL is created, so registering during
+// display bring-up would add the command to nothing.
+esp_err_t register_console();
+
 // LVGL is not thread-safe. Any task touching LVGL state (creating widgets,
 // reading input, setting values) must hold this lock for the duration of that
 // work. The internal LVGL task also holds it across lv_timer_handler().

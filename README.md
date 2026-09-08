@@ -924,6 +924,38 @@ Two caveats:
 - **The probe is destructive.** It erases the log and resets settings to get a
   known starting state. That is why it is opt-in.
 
+### Screenshots
+
+The screens in this README are captures, not photographs. `shot` on the serial
+console prints the active screen and `tools/screenshot.py` turns it into a PNG:
+
+```sh
+. $HOME/esp/esp-idf/export.sh     # pyserial lives in IDF's environment
+python tools/screenshot.py -o docs/main-screen.png
+```
+
+Close `idf.py monitor` first — the port takes one reader at a time, and a monitor
+still holding it looks exactly like a board that will not answer.
+
+It is a **re-render, not a framebuffer read**, because there is no framebuffer to
+read: the draw buffers are 40 lines each and the only complete image lives inside
+the ILI9341, which this wiring cannot read back. `lv_snapshot_take()` draws the
+active screen again into a full-size buffer in PSRAM, which costs about 1.4 KB of
+flash and nothing at all until someone asks. Two consequences worth knowing:
+
+- It captures **LVGL's state, not the panel's**, so a screen the idle ladder has
+  blanked still yields exactly what a wake would put back on it — and equally,
+  backlight level, the Dim rung and viewing angle are invisible here. For those, a
+  phone photo is still the honest picture.
+- Every data line is prefixed `S:` because the REPL and `ESP_LOG` share the one
+  USB serial channel. Without the marker an INFO line landing between two chunks
+  would corrupt the image; with it the host keeps only what it asked for.
+
+The frame goes over as base64 in 768-byte chunks — the largest multiple of 3 that
+gives a round 1024-character line, and base64 only concatenates on 3-byte
+boundaries. The header carries the stride alongside the width, so a change to
+`CONFIG_LV_DRAW_BUF_STRIDE_ALIGN` cannot silently shear the image.
+
 ## Host tests
 
 Two pieces are IDF-free by design and run on the dev machine: the alarm decision
@@ -962,7 +994,7 @@ code is. Push the IDF dependency into the wrapper beside it.
 │   ├── shell/              the USB serial REPL commands are registered into
 │   ├── alert/              alarm decision logic (IDF-free, host-tested) + its tick
 │   └── power/              the idle ladder and the battery sense
-├── tools/                  the Apps Script sink for the Sheet
+├── tools/                  the Apps Script sink for the Sheet, the screenshot grabber
 └── tests/host/             Catch2 unit tests, no IDF
 ```
 
@@ -1019,6 +1051,7 @@ returns.
 | ✅ Built | the form trimmed to network + identity; thresholds in tenths, hold-to-repeat, debounced writes |
 | ✅ Built | alerts — the state machine driven at the sample cadence, the alarm panel with Snooze / Off, the tone in bursts |
 | ✅ Built | power — the idle ladder, alarm sleep-inhibit, battery sense and state-of-charge meter, the Power page, Turn Off |
+| ✅ Built | `shot` + `tools/screenshot.py` — real screen captures over USB, for the docs |
 | ⬜️ Not started | sleeping on idle — the fourth rung reached by the ladder rather than by hand, gated on RTC-memory mirroring |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
