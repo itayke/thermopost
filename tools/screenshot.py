@@ -41,10 +41,8 @@ BAUD = 115200
 READ_TIMEOUT_S = 0.5       # per readline, so a silent board is noticed
 CAPTURE_TIMEOUT_S = 20.0   # whole attempt; ~200 lines is normally under a second
 
-# The command is re-sent rather than written once and hoped for. Opening this port
-# can reset the board — on the S3's native USB-Serial-JTAG, DTR and RTS are the
-# reset and boot lines — and a `shot` written into a board that is still booting is
-# simply lost, which looks identical to firmware that has never heard of it.
+# Re-sent rather than written once and hoped for, so a board that happens to be
+# booting when this connects still answers instead of timing out.
 RESEND_EVERY_S = 2.0
 
 # The protocol, matched to the constants in display.cpp.
@@ -87,10 +85,12 @@ def diagnose(header, seen):
 def capture(port, verbose=False):
     """Run `shot` and return (width, height, stride, pixel bytes)."""
     with serial.Serial(port, BAUD, timeout=READ_TIMEOUT_S) as ser:
-        # Deasserted before anything else, for the reason above: left asserted they
-        # can hold the board in reset or bounce it into the ROM bootloader.
-        ser.dtr = False
-        ser.rts = False
+        # DTR and RTS are deliberately left exactly as pyserial opened them. On the
+        # S3's native USB-Serial-JTAG they are the reset and boot lines, and driving
+        # them *is* what reboots the board — measured: with them untouched the post
+        # kept running across three reconnects, and deasserting them reset it every
+        # time. That matters more than it sounds: a reset would mean this only ever
+        # captures the screen the post boots into, and never the one you navigated to.
         ser.reset_input_buffer()
 
         deadline = time.monotonic() + CAPTURE_TIMEOUT_S

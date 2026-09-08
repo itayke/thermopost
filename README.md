@@ -937,6 +937,13 @@ python tools/screenshot.py -o docs/main-screen.png
 Close `idf.py monitor` first — the port takes one reader at a time, and a monitor
 still holding it looks exactly like a board that will not answer.
 
+**Navigate to the screen you want, then run the command.** Connecting does not
+reset the post, so it captures whatever it is showing. That is not free: on the
+S3's native USB-Serial-JTAG, DTR and RTS *are* the reset and boot lines, so the
+script leaves them exactly as pyserial opened them — driving them, even to
+deassert, reboots the board, and a rebooting board can only ever be photographed
+on the screen it boots into.
+
 It is a **re-render, not a framebuffer read**, because there is no framebuffer to
 read: the draw buffers are 40 lines each and the only complete image lives inside
 the ILI9341, which this wiring cannot read back. `lv_snapshot_take()` draws the
