@@ -139,11 +139,11 @@ inline constexpr uint8_t kSensorI2cAddrFirst   = 0x18;  // scan range, inclusive
 inline constexpr uint8_t kSensorI2cAddrLast    = 0x1F;
 inline constexpr int kSensorI2cFreqHz = 100'000;  // conservative for a flying lead
 
-// MCP9808 ALERT — open-drain, needs a pull-up. Unused in v1, but GPIO21 is
-// reserved for it because GPIO21 is RTC-capable: it would let a hardware
-// over-temperature alarm wake the SoC from deep sleep via ext1 without the
-// firmware sampling at all.
+// MCP9808 ALERT — open-drain, needs a pull-up. RTC-capable, so it can wake the SoC
+// from deep sleep via ext1 while the sensor watches the band on its own.
 inline constexpr int kSensorAlert = 21;
+// Active low: sensor.cpp's alert config leaves the polarity bit clear.
+inline constexpr int kSensorAlertActiveLevel = 0;
 
 // ---------------------------------------------------------------------------
 // Expansion header — IO2, IO3, IO14, IO21. Signal pins only, no power rail.

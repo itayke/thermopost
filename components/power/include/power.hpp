@@ -89,10 +89,27 @@ bool on_external_power();
 // module stays awake.
 [[noreturn]] void turn_off();
 
-// Called first thing in app_main. Returns true when this boot is a wake from Turn
-// Off rather than an ordinary one, and hands the touch interrupt pad back from the
-// RTC domain so the touch driver can claim it normally.
+// Why this boot happened. Decided once, in resume_from_off().
+enum class Wake : uint8_t {
+  PowerOn,      // not a deep-sleep wake: power, reset, flash, panic
+  FromOff,      // a touch after turn_off()
+  Touch,        // a touch during any other sleep
+  SensorAlert,  // the MCP9808's ALERT line: the band was left while asleep
+  Timer,        // the sleep ran its full length
+};
+Wake wake_cause();
+const char* wake_name(Wake w);
+
+// Called first thing in app_main. Classifies the wake, hands the wake pads back from
+// the RTC domain so their drivers can claim them, and returns true for a wake from
+// Turn Off.
 bool resume_from_off();
+
+// Deep sleep for `seconds`, waking early on a touch or the sensor's ALERT line. A
+// bench instrument, reached from the `power nap` command: it is how the sleep
+// current is metered and how the ALERT wire is proved to wake the board, before
+// anything sleeps on its own. Comes back as a full boot. Never returns.
+[[noreturn]] void nap(uint32_t seconds);
 
 // Push the ladder back to the top — the effect a touch has, available to anything
 // else that decides the screen has earned being lit.

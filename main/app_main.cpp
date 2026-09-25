@@ -86,8 +86,9 @@ extern "C" void app_main(void) {
   // wakes on the touch interrupt, and that pad is still held by the RTC domain
   // until this hands it back — which has to happen before touch::init() tries to
   // claim it as an ordinary GPIO.
-  if (power::resume_from_off()) {
-    ESP_LOGI(kTag, "woke from off");
+  power::resume_from_off();
+  if (power::wake_cause() != power::Wake::PowerOn) {
+    ESP_LOGI(kTag, "woke: %s", power::wake_name(power::wake_cause()));
   }
 
 #if CONFIG_THERMOPOST_RUN_BRINGUP_PROBE

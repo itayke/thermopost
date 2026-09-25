@@ -408,6 +408,20 @@ Three details that had to be right:
   reseated connector comes back at power-on defaults, and a window nobody rewrote
   would be a post that thinks it is protected and is not.
 
+**Proving the wire, and that it wakes the board.** With the line fitted, `power`
+prints what the pin reads beside what the sensor says over I²C, and names the fault
+when they disagree — `sensor asserts but the pin is high` is a missing or broken
+wire. Agreement while the reading is in band proves nothing, so warm the sensor past
+the band and look for `line works`. Then `power nap 60` deep-sleeps with three wake
+sources — touch on `ext0`, the ALERT line on `ext1`, and the timer — and the next
+boot logs which one it was (`woke: sensor ALERT`). The same command is how the
+sleep current is metered, long before anything sleeps on its own.
+
+Turn Off keeps touch as its only wake. Off means off, and a tank going out of band
+does not switch a post back on that someone switched off. A nap armed while ALERT
+is already low leaves `ext1` out: comparator mode holds the line down for as long as
+the reading stays out of band, so arming it would wake the board immediately.
+
 **It can be proved before the wire is soldered.** The part packs its own comparison
 into bits 15..13 of every ambient read, and those track the limits whether or not the
 ALERT output is enabled — so `sensor` logs `hardware alert asserted` / `cleared` on
@@ -1200,6 +1214,7 @@ returns.
 | ✅ Built | the upload cadence — separate lit and dark floors on how often the radio comes up, bypassed by a flagged record |
 | ✅ Built | battery in the upload envelope — pack volts, percent and supply per batch, with a `posts` tab to alert from |
 | ✅ Built | the hardware alert window — the MCP9808's own comparator tracks the band, ready for the ALERT wire |
+| ✅ Built | the ALERT line as a wake source — `ext1` beside touch on `ext0`, the wake cause logged, `power nap` to meter and prove it |
 | ✅ Built | the captive portal, the always-on config form, mDNS, and the Network screen |
 | ✅ Built | the Configure page — a QR that joins the setup AP, closing it on the way out |
 | ✅ Built | the form trimmed to network + identity; thresholds in tenths, hold-to-repeat, debounced writes |

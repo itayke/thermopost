@@ -2,6 +2,7 @@
 
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <string_view>
 
 #include "freertos/FreeRTOS.h"
@@ -9,6 +10,7 @@
 #include "freertos/task.h"
 
 #include "alert.hpp"
+#include "sensor.hpp"
 #include "settings.hpp"
 #include "board_pins.hpp"
 #include "display.hpp"
@@ -16,6 +18,7 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_console.h"
+#include "driver/gpio.h"
 #include "driver/rtc_io.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_sleep.h"
@@ -166,6 +169,27 @@ constexpr int kSocPoints = static_cast<int>(sizeof(kSocCurve) / sizeof(kSocCurve
 // refuses to boot.
 constexpr uint32_t kOffMagic = 0x0FF0FF01;
 RTC_DATA_ATTR uint32_t s_off_magic;
+
+// ext0 carries the touch line and ext1 the sensor's, so Turn Off keeps the wake it
+// always had. ext1 is armed ANY_LOW, which only fits an active-low ALERT.
+static_assert(board::kSensorAlertActiveLevel == 0,
+              "ext1 is armed ANY_LOW; an active-high ALERT needs ANY_HIGH");
+constexpr int kRtcGpioMax = 21;  // ESP32-S3 RTC pads are GPIO0..21
+static_assert(board::kSensorAlert <= kRtcGpioMax && board::kTouchInt <= kRtcGpioMax,
+              "a deep-sleep wake pin must be RTC-capable");
+
+constexpr uint64_t kUsPerSec = 1'000'000;
+constexpr uint32_t kNapDefaultS = 30;
+constexpr uint32_t kNapMaxS = 3600;
+// Long enough for the goodbye line to leave the USB FIFO before the device drops.
+constexpr uint32_t kSleepFlushMs = 200;
+
+Wake s_wake = Wake::PowerOn;
+
+bool alert_line_asserted() {
+  return gpio_get_level(static_cast<gpio_num_t>(board::kSensorAlert)) ==
+         board::kSensorAlertActiveLevel;
+}
 
 // Where the dim and dark rungs land when a sleep deadline is in play. The ladder
 // is then scaled to fit underneath it instead of using the Kconfig delays, so one
@@ -430,11 +454,41 @@ void task(void*) {
 // Exists mostly to be the instrument the divider is measured with: a line that
 // can be read off the console while a meter sits on the pack terminals, rather
 // than a debug log someone has to go and add.
+// Proves the ALERT wire by comparing what the sensor says over I2C with what the pin
+// reads. Agreement while clear proves nothing; warm the sensor to make it count.
+void print_alert_line() {
+  const bool pin = alert_line_asserted();
+  const sensor::Reading r = sensor::latest();
+  const char* verdict;
+  if (!r.valid) {
+    verdict = "no sensor to compare against";
+  } else if (r.alert && pin) {
+    verdict = "line works";
+  } else if (r.alert) {
+    verdict = "sensor asserts but the pin is high: ALERT line not connected";
+  } else if (pin) {
+    verdict = "pin low with the sensor clear: short, or no pull-up";
+  } else {
+    verdict = "agree; warm it past the band to prove the line";
+  }
+  std::printf("alert     IO%d %s, sensor %s: %s\n", board::kSensorAlert,
+              pin ? "low" : "high", r.alert ? "asserted" : "clear", verdict);
+}
+
 int cmd_power(int argc, char** argv) {
   if (argc > 1 && std::string_view(argv[1]) == "wake") {
     wake();
     std::printf("woken\n");
     return 0;
+  }
+  if (argc > 1 && std::string_view(argv[1]) == "nap") {
+    uint32_t s = kNapDefaultS;
+    if (argc > 2) s = static_cast<uint32_t>(std::strtoul(argv[2], nullptr, 10));
+    if (s == 0 || s > kNapMaxS) {
+      std::printf("nap takes 1..%" PRIu32 " seconds\n", kNapMaxS);
+      return 1;
+    }
+    nap(s);
   }
 
   const Battery b = battery();
@@ -442,6 +496,8 @@ int cmd_power(int argc, char** argv) {
   std::printf("idle      %" PRIu32 " s (dim at %" PRIu32 ", dark at %" PRIu32 ")\n",
               idle_ms() / kMsPerSec, kDimAfterMs / kMsPerSec, kDarkAfterMs / kMsPerSec);
   std::printf("auto sleep %s\n", kAutoSleepReady ? "armed" : "not wired yet");
+  std::printf("last wake %s\n", wake_name(s_wake));
+  print_alert_line();
 
   if (!b.present) {
     std::printf("battery   no answer from ADC1_CH8 (GPIO%d)\n", board::kBatteryAdc);
@@ -465,7 +521,7 @@ void register_command() {
   // esp_console_cmd_t has grown fields across IDF releases.
   const esp_console_cmd_t cmd = {
       .command = "power",
-      .help = "idle tier + battery sense; `power wake` lights the screen",
+      .help = "idle tier, battery, ALERT line; `power wake`; `power nap [s]` deep-sleeps",
       .hint = nullptr,
       .func = &cmd_power,
   };
@@ -531,6 +587,17 @@ esp_err_t init() {
     return ESP_ERR_NO_MEM;
   }
 
+  // An input with a pull-up while awake, so `power` can read the line. The pull-up
+  // also keeps an unwired IO21 high, which is the idle state.
+  const gpio_config_t alert_cfg = {
+      .pin_bit_mask = 1ULL << board::kSensorAlert,
+      .mode = GPIO_MODE_INPUT,
+      .pull_up_en = GPIO_PULLUP_ENABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  gpio_config(&alert_cfg);
+
   register_command();
   s_inited = true;
   ESP_LOGI(kTag, "dim at %" PRIu32 " s, dark at %" PRIu32 " s, auto sleep %s",
@@ -559,37 +626,93 @@ Battery battery() {
 
 bool auto_sleep_armed() { return kAutoSleepReady; }
 
-void turn_off() {
-  ESP_LOGW(kTag, "switching off; a touch on the screen is the way back");
-  s_off_magic = kOffMagic;
-  // Blanked before sleeping rather than left to the pin falling on its own, so the
-  // screen goes out at the moment of the tap instead of a beat later.
-  display::set_on(false);
+namespace {
 
-  const gpio_num_t pin = static_cast<gpio_num_t>(board::kTouchInt);
-  // The pull-up has to be held through the sleep by the RTC domain, not the normal
-  // GPIO matrix, which is powered down. Without it the line floats and the post
-  // wakes on nothing at all — which looks exactly like Turn Off not working.
+// The pull-up has to be held by the RTC domain, not the GPIO matrix, which powers
+// down. Without it the line floats and the post wakes on nothing at all.
+void hold_pullup(gpio_num_t pin) {
   rtc_gpio_pullup_en(pin);
   rtc_gpio_pulldown_dis(pin);
-  esp_sleep_enable_ext0_wakeup(pin, kTouchIntActiveLevel);
+}
+
+// Touch always; the sensor's line when asked; a timer when `timer_s` is non-zero.
+void arm_wakes(uint32_t timer_s, bool sensor) {
+  const gpio_num_t touch = static_cast<gpio_num_t>(board::kTouchInt);
+  hold_pullup(touch);
+  esp_sleep_enable_ext0_wakeup(touch, kTouchIntActiveLevel);
+  // ext0 already keeps RTC peripherals powered; stated because ext1's pull-up needs it too.
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+  if (sensor) {
+    hold_pullup(static_cast<gpio_num_t>(board::kSensorAlert));
+    esp_sleep_enable_ext1_wakeup_io(1ULL << board::kSensorAlert, ESP_EXT1_WAKEUP_ANY_LOW);
+  }
+  if (timer_s > 0) esp_sleep_enable_timer_wakeup(timer_s * kUsPerSec);
+}
+
+void sleep_now() {
+  std::fflush(stdout);
+  usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(kSleepFlushMs));
   esp_deep_sleep_start();
 }
 
-bool resume_from_off() {
-  // The reset reason is the authoritative half of the check; the magic guards the
-  // case where a deep-sleep wake happens for some other reason later.
-  if (esp_reset_reason() != ESP_RST_DEEPSLEEP || s_off_magic != kOffMagic) {
-    s_off_magic = 0;
-    return false;
+Wake classify_wake() {
+  if (esp_reset_reason() != ESP_RST_DEEPSLEEP) return Wake::PowerOn;
+  // The magic guards against a later, unrelated deep-sleep wake reading as Off.
+  if (s_off_magic == kOffMagic) return Wake::FromOff;
+  switch (esp_sleep_get_wakeup_cause()) {
+    case ESP_SLEEP_WAKEUP_EXT0:  return Wake::Touch;
+    case ESP_SLEEP_WAKEUP_EXT1:  return Wake::SensorAlert;
+    case ESP_SLEEP_WAKEUP_TIMER: return Wake::Timer;
+    default:                     return Wake::PowerOn;
   }
-  s_off_magic = 0;
+}
 
-  // Hand the pad back before the touch driver comes up: it was held by the RTC
-  // domain across the sleep, and a pin still owned by RTC IO is not one the normal
-  // GPIO matrix can configure.
-  rtc_gpio_deinit(static_cast<gpio_num_t>(board::kTouchInt));
-  return true;
+}  // namespace
+
+void turn_off() {
+  ESP_LOGW(kTag, "switching off; a touch on the screen is the way back");
+  s_off_magic = kOffMagic;
+  // Blanked now rather than when the rail drops, so the screen goes out on the tap.
+  display::set_on(false);
+  // Touch only. Off means off: no timer, and not the sensor either.
+  arm_wakes(0, /*sensor=*/false);
+  sleep_now();
+}
+
+void nap(uint32_t seconds) {
+  // Comparator mode holds ALERT low for as long as the reading is out of band, so an
+  // ext1 armed now would fire at once and every nap would be a reboot.
+  const bool sensor = !alert_line_asserted();
+  if (!sensor) ESP_LOGW(kTag, "ALERT is already asserted; napping without it");
+  ESP_LOGW(kTag, "napping %" PRIu32 " s; touch, ALERT or the timer brings it back",
+           seconds);
+  display::set_on(false);
+  arm_wakes(seconds, sensor);
+  sleep_now();
+}
+
+bool resume_from_off() {
+  s_wake = classify_wake();
+  s_off_magic = 0;
+  if (s_wake != Wake::PowerOn) {
+    // Held by RTC IO across the sleep, and a pad RTC IO still owns is not one the
+    // GPIO matrix can configure — so hand both back before their drivers start.
+    rtc_gpio_deinit(static_cast<gpio_num_t>(board::kTouchInt));
+    rtc_gpio_deinit(static_cast<gpio_num_t>(board::kSensorAlert));
+  }
+  return s_wake == Wake::FromOff;
+}
+
+Wake wake_cause() { return s_wake; }
+
+const char* wake_name(Wake w) {
+  switch (w) {
+    case Wake::FromOff:     return "touch, from Off";
+    case Wake::Touch:       return "touch";
+    case Wake::SensorAlert: return "sensor ALERT";
+    case Wake::Timer:       return "timer";
+    default:                return "power-on";
+  }
 }
 
 bool on_external_power() {

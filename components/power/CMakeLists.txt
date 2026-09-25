@@ -13,6 +13,7 @@ idf_component_register(
         esp_driver_usb_serial_jtag  # the SOF monitor: is a USB host on the cable?
         esp_timer       # the monotonic clock wake() stamps
         settings        # the power mode and the sleep delay
+        sensor          # its own alert verdict, to check the ALERT line against
         console         # the `power` serial command
         lvgl__lvgl      # the inactivity counter the ladder reads
 )
