@@ -16,6 +16,7 @@ idf_component_register(
         audio           # the tone, when the band is left
         sensor          # the readings that are tested against it
         settings        # the band itself, plus the mute and the volume
+        sleepstate      # the alarm's state, kept across a deep sleep
         esp_timer       # the monotonic clock the snooze deadline is on
 )
 

@@ -53,7 +53,8 @@ size_t history(Sample* out, size_t n);
 // 239 pointless redraws out of every 240.
 uint32_t generation();
 
-// Records SUCCESSFULLY appended since boot. Counts completed writes, not
+// Records SUCCESSFULLY appended since the post last powered on — a deep sleep does
+// not reset it, so a post that wakes every minute still counts up. Counts completed writes, not
 // attempts: a counter that keeps climbing while the filesystem is full or broken
 // defeats the only job it has on screen, which is to distinguish "recording
 // normally" from "stopped recording" when the temperature itself is not moving.

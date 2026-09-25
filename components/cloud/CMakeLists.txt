@@ -21,6 +21,7 @@ idf_component_register(
         shell             # ours: the REPL those commands land in
         power             # the idle tier picks which upload cadence applies
         settings          # the post's name, sent with every batch
+        sleepstate        # the upload deadline, kept across a deep sleep
         storage           # the record log the queue drains
 )
 

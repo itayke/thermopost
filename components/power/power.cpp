@@ -11,6 +11,7 @@
 
 #include "alert.hpp"
 #include "sensor.hpp"
+#include "sleepstate.hpp"
 #include "settings.hpp"
 #include "board_pins.hpp"
 #include "display.hpp"
@@ -207,15 +208,10 @@ constexpr uint32_t kFractionDen     = 3;
 // itself to sleep — and this is the gate rather than missing code so the reason
 // travels with it.
 //
-// RTC-memory mirroring has to land first, for the alarm's Status and the
-// recorder's in-flight interval, because deep sleep loses RAM. Sleeping to save
-// power has to come back as the same device it went down as: an acknowledged alarm
-// that forgets it was acknowledged would re-alert on every wake, which turns Off
-// into a button that does nothing. Turn Off needs none of that, which is exactly
-// why it could ship first — there, the state is *meant* to be gone.
-//
-// The graph's ring needs no mirroring: recorder::init() already backfills it from
-// the log, so a wake rebuilds it exactly as a cold boot does.
+// What remains: the quiet timer wake that samples and sleeps without lighting LVGL,
+// and the ALERT wire proved on the board (`power` says "line works"). The state a
+// wake has to keep is already mirrored — see the sleepstate component, which `power
+// nap` exercises today.
 constexpr bool kAutoSleepReady = false;
 
 constexpr int kTaskStack = 3072;
@@ -254,6 +250,12 @@ bool     s_external = true;  // assumed until the first sample says otherwise
 // as unplugged, because the sticky flag outlives the cable. A reboot clears it, and
 // the wire from VBUS would retire the whole question.
 bool     s_ever_saw_host = false;
+// Across deep sleep. Lost, a woken post would judge its supply by pack voltage
+// alone — the heuristic that is wrong for minutes after a full pack is unplugged.
+RTC_DATA_ATTR bool s_ever_saw_host_mirror;
+
+// A bool the power task alone writes, so no lock.
+void save_for_sleep() { s_ever_saw_host_mirror = s_ever_saw_host; }
 // When something that is not a touch last insisted the device was in use — a
 // serial `power wake`, or anything else that decides the screen has earned being
 // lit. LVGL's own counter cannot be reset from outside without faking an input
@@ -571,6 +573,9 @@ esp_err_t init() {
   s_mutex = xSemaphoreCreateMutex();
   if (s_mutex == nullptr) return ESP_ERR_NO_MEM;
 
+  if (sleepstate::resumed()) s_ever_saw_host = s_ever_saw_host_mirror;
+  sleepstate::on_sleep(&save_for_sleep);
+
   const esp_err_t adc_err = init_adc();
   if (adc_err != ESP_OK) {
     // Non-fatal, and deliberately so: the ladder is worth having on a board whose
@@ -649,7 +654,7 @@ void arm_wakes(uint32_t timer_s, bool sensor) {
   if (timer_s > 0) esp_sleep_enable_timer_wakeup(timer_s * kUsPerSec);
 }
 
-void sleep_now() {
+[[noreturn]] void sleep_now() {
   std::fflush(stdout);
   usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(kSleepFlushMs));
   esp_deep_sleep_start();
@@ -687,6 +692,9 @@ void nap(uint32_t seconds) {
   ESP_LOGW(kTag, "napping %" PRIu32 " s; touch, ALERT or the timer brings it back",
            seconds);
   display::set_on(false);
+  // Sealed, unlike Off: a nap rehearses the automatic sleep, so it comes back as the
+  // same device — an acknowledged alarm stays acknowledged.
+  sleepstate::save_all();
   arm_wakes(seconds, sensor);
   sleep_now();
 }
@@ -694,6 +702,9 @@ void nap(uint32_t seconds) {
 bool resume_from_off() {
   s_wake = classify_wake();
   s_off_magic = 0;
+  // Off and power-on start clean; any other sleep resumes what it sealed.
+  sleepstate::begin_boot(s_wake == Wake::Touch || s_wake == Wake::SensorAlert ||
+                         s_wake == Wake::Timer);
   if (s_wake != Wake::PowerOn) {
     // Held by RTC IO across the sleep, and a pad RTC IO still owns is not one the
     // GPIO matrix can configure — so hand both back before their drivers start.

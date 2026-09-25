@@ -499,23 +499,36 @@ silicon while the SoC is off, and `IO21` is reserved to carry its ALERT pin to a
 RTC-capable input. Until that line is fitted and proved, sleeping on idle should not
 ship at all.
 
-With the wire in, one thing still has to land:
+**What a wake keeps.** Deep sleep loses RAM, and sleeping to save power has to come
+back as the same device it went down as. Each component that owns such state keeps
+its own `RTC_DATA_ATTR` mirror and registers a hook with
+[`sleepstate`](components/sleepstate/include/sleepstate.hpp), which fills them all
+just before a sleep and *seals* them; the next boot trusts a mirror only behind that
+seal. Turn Off never seals — Off is meant to forget, and coming back is honestly a
+fresh boot — which is exactly why it could ship first.
 
-- **RTC-memory mirroring** for the alarm's `Status` and the recorder's in-flight
-  interval, because deep sleep loses RAM. Sleeping to save power has to come back
-  as the same device it went down as: an acknowledged alarm that forgets it was
-  acknowledged would re-alert on every wake, which turns Off into a button that
-  does nothing. Turn Off needs none of it — there the state is *meant* to be gone —
-  which is exactly why it could ship first. The graph's ring needs no mirroring
-  either: `recorder::init()` already backfills it from the log, so a wake rebuilds
-  it exactly as a cold boot does.
+| kept | owner | why it matters |
+|---|---|---|
+| alarm `state`, `acked`, snooze deadline | `alert` | an acknowledged alarm that forgets re-alerts on every wake, and `step()` treats a changed state as a new episode |
+| next upload deadline | `cloud` | lost, every wake finds the upload due and brings the radio up |
+| `written()` | `recorder` | a post that boots every minute would show 0 or 1 forever on the "is it still recording?" counter |
+| has a USB host ever answered | `power` | lost, a woken post judges its supply by pack voltage alone |
 
-  Two members of that mirror are traps rather than copies. `Status::snooze_until_ms`
-  is on the `esp_timer` monotonic clock, which restarts at zero on a deep-sleep wake,
-  so mirroring the struct verbatim would expire every snooze instantly — it has to
-  travel as wall-clock or as remaining time. And `recorder::written()` is *since
-  boot*, which on a post that boots every minute stops answering the question it is
-  on screen to answer.
+**Deadlines are the trap.** Everything runs on `esp_timer`, which restarts at zero on
+every deep-sleep wake, so a deadline mirrored as-is is meaningless — a snooze would
+expire instantly and the upload cadence would collapse to "every wake". They travel
+as absolute *wall-clock* times, which IDF keeps running through deep sleep, and are
+converted back at the boundary. Absolute rather than remaining, so a deadline
+survives any number of later wakes that never touched it. `alert_logic` never sees
+the difference, which is what kept the host tests untouched.
+
+Two things need no mirror at all. The graph's ring is rebuilt from the log by
+`recorder::init()`, exactly as on a cold boot. And the recorder's in-flight interval
+does not exist on a sleeping post: one wake is one record, so the sleep *is* the
+interval.
+
+`power nap` seals like the automatic sleep will, which is what makes it a faithful
+rehearsal: acknowledge an alarm, nap, and it wakes still acknowledged.
 
 #### The divider, and why USB presence is a guess
 
@@ -1158,7 +1171,8 @@ code is. Push the IDF dependency into the wrapper beside it.
 │   ├── settings/           NVS-backed name / interval / band / units / sound
 │   ├── shell/              the USB serial REPL commands are registered into
 │   ├── alert/              alarm decision logic (IDF-free, host-tested) + its tick
-│   └── power/              the idle ladder and the battery sense
+│   ├── power/              the idle ladder, the battery sense, deep sleep and its wakes
+│   └── sleepstate/         what survives a deep sleep, and the clock it is kept on
 ├── tools/                  the Apps Script sink for the Sheet, the screenshot grabber
 └── tests/host/             Catch2 unit tests, no IDF
 ```
@@ -1215,6 +1229,7 @@ returns.
 | ✅ Built | battery in the upload envelope — pack volts, percent and supply per batch, with a `posts` tab to alert from |
 | ✅ Built | the hardware alert window — the MCP9808's own comparator tracks the band, ready for the ALERT wire |
 | ✅ Built | the ALERT line as a wake source — `ext1` beside touch on `ext0`, the wake cause logged, `power nap` to meter and prove it |
+| ✅ Built | the sleep mirror — alarm, upload deadline, record counter and supply flag kept across deep sleep, deadlines on the wall clock |
 | ✅ Built | the captive portal, the always-on config form, mDNS, and the Network screen |
 | ✅ Built | the Configure page — a QR that joins the setup AP, closing it on the way out |
 | ✅ Built | the form trimmed to network + identity; thresholds in tenths, hold-to-repeat, debounced writes |

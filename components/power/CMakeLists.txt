@@ -14,6 +14,7 @@ idf_component_register(
         esp_timer       # the monotonic clock wake() stamps
         settings        # the power mode and the sleep delay
         sensor          # its own alert verdict, to check the ALERT line against
+        sleepstate      # sealing state before a nap; the USB-host flag across sleep
         console         # the `power` serial command
         lvgl__lvgl      # the inactivity counter the ladder reads
 )

@@ -4,11 +4,13 @@
 #include "cloud_portal.hpp"
 #include "power.hpp"
 #include "settings.hpp"
+#include "sleepstate.hpp"
 #include "shell.hpp"
 #include "storage.hpp"
 
 #include "esp_check.h"
 #include "esp_console.h"
+#include "esp_attr.h"
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
 #include "esp_http_client.h"
@@ -169,9 +171,14 @@ esp_err_t s_last_error = ESP_OK;
 
 // When the queue may next drain. Zero so the first record after boot goes at once,
 // whatever the cadence — a post that has just come up should prove it can reach the
-// Sheet rather than sitting on that question for an hour. Read and written only by
-// the sync task, so it needs no lock.
+// Sheet rather than sitting on that question for an hour. Written only by the sync
+// task; the sleep hook reads it once, as the post goes down.
 int64_t   s_next_upload_ms = 0;
+// The deadline across deep sleep, on the wall clock. Without it every wake starts at
+// zero, finds the upload due, and brings the radio up — the whole cadence undone.
+RTC_DATA_ATTR int64_t s_next_upload_wall_ms;
+
+void save_for_sleep() { s_next_upload_wall_ms = sleepstate::to_wall_ms(s_next_upload_ms); }
 
 // The dedupe key the Sheet groups on: this board's MAC as lowercase hex. Read
 // from efuse once at init — stable for the life of the hardware, and unlike the
@@ -964,6 +971,10 @@ esp_err_t init() {
   if (srv != ESP_OK) ESP_LOGE(kTag, "config form unavailable: %s", esp_err_to_name(srv));
 
   register_commands();
+
+  // Before the sync task, which is the only other reader of the deadline.
+  if (sleepstate::resumed()) s_next_upload_ms = sleepstate::to_mono_ms(s_next_upload_wall_ms);
+  sleepstate::on_sleep(&save_for_sleep);
 
   xTaskCreatePinnedToCore(sync_task, "cloud", kSyncTaskStack, nullptr,
                           kSyncTaskPrio, &s_task, kSyncTaskCore);

@@ -7,11 +7,13 @@
 #include "freertos/task.h"
 
 #include "audio.hpp"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include "sensor.hpp"
 #include "settings.hpp"
+#include "sleepstate.hpp"
 
 namespace thermopost::alert {
 namespace {
@@ -68,6 +70,22 @@ struct Lock {
 };
 
 int64_t now_ms() { return esp_timer_get_time() / kUsPerMs; }
+
+// The alarm as it went to sleep. Without it an acknowledged excursion re-alerts on
+// every wake, which turns Off into a button that does nothing. The snooze travels as
+// wall-clock time because esp_timer restarts at zero on a deep-sleep wake.
+struct SleepMirror {
+  State   state;
+  bool    acked;
+  int64_t snooze_until_wall_ms;  // 0 when not snoozed
+};
+RTC_DATA_ATTR SleepMirror s_mirror;
+
+void save_for_sleep() {
+  Lock l;
+  s_mirror = {s_status.state, s_status.acked,
+              sleepstate::to_wall_ms(s_status.snooze_until_ms)};
+}
 
 const char* state_name(State s) {
   switch (s) {
@@ -153,6 +171,13 @@ esp_err_t init() {
 
   s_mutex = xSemaphoreCreateMutex();
   if (s_mutex == nullptr) return ESP_ERR_NO_MEM;
+
+  // Before the task, so its first tick judges the restored episode, not a fresh one.
+  if (sleepstate::resumed()) {
+    s_status = {s_mirror.state, s_mirror.acked,
+                sleepstate::to_mono_ms(s_mirror.snooze_until_wall_ms)};
+  }
+  sleepstate::on_sleep(&save_for_sleep);
 
   if (xTaskCreatePinnedToCore(task, "alert", kTaskStack, nullptr, kTaskPrio, nullptr,
                               kTaskCore) != pdPASS) {

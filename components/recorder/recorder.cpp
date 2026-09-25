@@ -9,10 +9,12 @@
 
 #include "alert_logic.hpp"
 #include "cloud.hpp"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "sensor.hpp"
 #include "settings.hpp"
+#include "sleepstate.hpp"
 #include "storage.hpp"
 
 namespace thermopost::recorder {
@@ -69,6 +71,9 @@ size_t   s_count = 0;  // valid entries, <= kRingCap
 size_t   s_head  = 0;  // next write position
 uint32_t s_generation = 0;
 uint32_t s_written = 0;
+// written() across deep sleep. A post that boots every minute would otherwise show
+// 0 or 1 forever, on the one counter that answers "is it still recording?".
+RTC_DATA_ATTR uint32_t s_written_mirror;
 
 // The interval's running aggregate, reset after every record.
 int32_t  s_sum_c100 = 0;
@@ -292,6 +297,11 @@ void backfill() {
            static_cast<unsigned long>(done), static_cast<unsigned long>(total));
 }
 
+void save_for_sleep() {
+  Guard g;
+  s_written_mirror = s_written;
+}
+
 }  // namespace
 
 esp_err_t init() {
@@ -302,6 +312,8 @@ esp_err_t init() {
 
   reset_aggregate();
   backfill();
+  if (sleepstate::resumed()) s_written = s_written_mirror;
+  sleepstate::on_sleep(&save_for_sleep);
 
   if (xTaskCreatePinnedToCore(task, "recorder", kTaskStack, nullptr, kTaskPrio,
                               nullptr, kTaskCore) != pdPASS) {

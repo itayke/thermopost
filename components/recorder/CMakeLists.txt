@@ -9,6 +9,7 @@ idf_component_register(
         esp_timer   # uptime_us stamp
         sensor
         settings
+        sleepstate  # written() kept across a deep sleep
         storage
 )
 
