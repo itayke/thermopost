@@ -165,6 +165,35 @@ expected — clangd has no context until the build writes
 `build/compile_commands.json`. The xtensa-only flag warnings (`-mlongcalls`, …)
 are cosmetic and never go away.
 
+### Moving a post to the OTA layout (once, over USB)
+
+The flash now holds two 3 MB app slots, so an update is written beside the running
+image rather than over it, and the bootloader rolls back an update that never proves
+itself. The partition table and the bootloader are only ever written over USB, so
+every post needs this one cable visit before over-the-air updates can reach it.
+
+Rollback is set in `sdkconfig.defaults`, which does not override an `sdkconfig` that
+already exists. Check before flashing:
+
+```sh
+grep BOOTLOADER_APP_ROLLBACK_ENABLE sdkconfig   # must read =y
+idf.py set-target esp32s3                       # if not: regenerates sdkconfig from the defaults
+```
+
+Then flash as usual. What survives depends on whether the flash is erased first:
+
+| command | keeps | loses |
+|---|---|---|
+| `idf.py flash` | Wi-Fi, name, settings, the upload mark — `nvs` kept its offset | the on-device log, so the graph starts empty — anything not yet uploaded too, so check `cloud status` shows nothing pending first |
+| `idf.py erase-flash flash` | nothing | everything, and the post comes back unprovisioned |
+
+After a plain `flash`, the log resumes numbering **above the upload mark**
+(`storage::raise_index_floor`, called by cloud sync) instead of restarting at zero.
+That matters because the Sheet dedupes on `device` + `index`: reused indices would be
+dropped as duplicates of rows it already holds, and counted as sent. After
+`erase-flash` the upload mark is gone too, so delete that post's rows from the Sheet
+first, or its new readings will be dropped the same way.
+
 ## Usage
 
 Flashing brings the board up through `display → nvs → storage → settings → i2c →
@@ -1184,7 +1213,7 @@ code is. Push the IDF dependency into the wrapper beside it.
 
 ```
 .
-├── partitions.csv          nvs + factory (4 MB) + littlefs (~12 MB)
+├── partitions.csv          nvs + otadata + two 3 MB app slots + littlefs (~9.9 MB)
 ├── sdkconfig.defaults      PSRAM, flash, partition table, FreeRTOS tick, console, LVGL
 ├── main/                   boot sequencer, board_pins, opt-in bring-up probe
 ├── components/
@@ -1266,6 +1295,7 @@ returns.
 | ✅ Built | power — the idle ladder, alarm sleep-inhibit, battery sense and state-of-charge meter, the Power page, Turn Off |
 | ✅ Built | `shot` + `tools/screenshot.py` — real screen captures over USB, for the docs |
 | ✅ Built | the quiet wake — a timer wake records, judges the alarm and uploads on the dark cadence without lighting the screen, coming up fully only for an alarm or a charger |
+| ✅ Built | the OTA layout — two app slots, a rollback bootloader, and log numbering that never falls below the upload mark |
 | 🟨 Gated | sleeping on idle — the ladder's fourth rung, behind `kAutoSleepReady` until the quiet wake has run on the bench and the sleep current is metered |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →

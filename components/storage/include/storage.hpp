@@ -147,10 +147,16 @@ size_t read_recent(TempRecord* out, size_t max);
 // records (rotating everything away is never what the caller meant).
 esp_err_t force_rotate(uint32_t drop_count);
 
-// Delete every record. Resets the base index to 0, so absolute numbering
-// restarts — cloud sync must have its high-water mark reset alongside this or
-// it will consider the fresh records already uploaded.
+// Delete every record. Resets the base index to 0; cloud sync then raises it back
+// above its high-water mark through raise_index_floor().
 esp_err_t erase_all();
+
+// Never number a record below `floor`. A log that lost records — erased, reformatted
+// after corruption, or wiped by a partition change while NVS survived — would
+// otherwise reuse indices the Sheet already holds, which it drops as duplicates, and
+// that the uploader counts as sent. Rebases to `floor` when the log is behind it,
+// which renumbers anything written since the loss; a no-op otherwise.
+esp_err_t raise_index_floor(uint32_t floor);
 
 // Print the whole log to the console as parseable `dump[i]: ...` lines.
 // Diagnostic only, triggered from the serial console — streams in small batches

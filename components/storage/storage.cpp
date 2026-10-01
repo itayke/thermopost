@@ -459,8 +459,23 @@ esp_err_t erase_all() {
   }
   s_base = 0;
   s_records = 0;
-  ESP_LOGW(kTag, "log erased; absolute numbering restarts at 0 — reset the cloud "
-                 "high-water mark too or the new records look already-uploaded");
+  ESP_LOGW(kTag, "log erased; numbering resumes above the upload mark once cloud "
+                 "sync next looks");
+  return ESP_OK;
+}
+
+esp_err_t raise_index_floor(uint32_t floor) {
+  if (!s_mounted) return ESP_ERR_INVALID_STATE;
+  Guard g;
+  if (!g.ok) return ESP_ERR_TIMEOUT;
+  if (floor <= s_base + s_records) return ESP_OK;
+  // Rebased to the floor itself, so anything written since the loss is renumbered
+  // above the mark and still gets sent.
+  if (!nvs_write_pair(kNvsKeyBase, floor, kNvsKeyPending, 0)) return ESP_FAIL;
+  ESP_LOGW(kTag, "log is behind the upload mark (%u < %u); numbering resumes at %u",
+           static_cast<unsigned>(s_base + s_records), static_cast<unsigned>(floor),
+           static_cast<unsigned>(floor));
+  s_base = floor;
   return ESP_OK;
 }
 

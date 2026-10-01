@@ -512,6 +512,8 @@ BatchResult upload_batch() {
   env.batt_pct = usable ? b.pct : -1;
   env.external = power::on_external_power();
 
+  // Here as well as at init, for a log erased while the post runs.
+  if (hwm > storage::next_index()) storage::raise_index_floor(hwm);
   if (hwm >= storage::next_index()) return BatchResult::UpToDate;
 
   auto* recs = static_cast<storage::TempRecord*>(
@@ -923,6 +925,8 @@ esp_err_t init() {
 
   load_config();
   compute_device_id();
+  // Before the recorder's first write: a log that lost records must not reuse indices.
+  storage::raise_index_floor(s_hwm);
   // Before the radio: no endpoint means nothing to send, so no Wi-Fi to start.
   if (s_quiet && !configured()) return ESP_ERR_NOT_FOUND;
 
