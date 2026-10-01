@@ -25,6 +25,9 @@
 // safe — alert::status() answers Normal until the first tick. `power` is last of
 // all: its ladder reads the alarm, and it takes over the backlight from the fixed
 // level set at the bottom of this function.
+//
+// A timer wake takes a shorter road first — see quiet_wake() — and joins this one only
+// when it finds something a person has to see.
 
 #include "board_i2c.hpp"
 #include "bringup_probe.hpp"
@@ -43,6 +46,9 @@
 #include "ui.hpp"
 
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nvs_flash.h"
 
 namespace {
@@ -79,6 +85,61 @@ void step(const char* name, esp_err_t err) {
   }
 }
 
+// How long a quiet wake waits for its one reading: two periods covers a sample that
+// just missed, and a sensor that has gone is a fault record rather than a hang.
+constexpr int64_t  kUsPerMs = 1000;
+constexpr int64_t  kFirstReadingWaitUs = 2 * int64_t{sensor::kSamplePeriodMs} * kUsPerMs;
+constexpr uint32_t kFirstReadingPollMs = 10;
+
+// Long enough to associate, take a lease and post a batch through Apps Script's
+// redirect; a backlog longer than that finishes on a later wake.
+constexpr uint32_t kQuietUploadTimeoutMs = 30'000;
+
+sensor::Reading wait_for_reading() {
+  const int64_t until = esp_timer_get_time() + kFirstReadingWaitUs;
+  sensor::Reading r = sensor::latest();
+  while (r.samples == 0 && esp_timer_get_time() < until) {
+    vTaskDelay(pdMS_TO_TICKS(kFirstReadingPollMs));
+    r = sensor::latest();
+  }
+  return r;
+}
+
+// A timer wake: record, judge the alarm, upload when the dark cadence is due, and sleep
+// again with the panel never lit. Returns only when the post has to come up properly —
+// an alarm to raise, or a supply it does not sleep on — with whether the record it wrote
+// is one the uploader must not hold back.
+bool quiet_wake() {
+  step("nvs", init_nvs());
+  step("storage", storage::init());
+  step("settings", settings::init());
+  step("i2c", board_i2c::init());
+  // Before the sensor, so its first configure arms the window rather than clearing it.
+  const alert::Thresholds t = settings::thresholds();
+  sensor::set_alert_window(t.min_c100, t.max_c100);
+  step("sensor", sensor::init());
+  step("power", power::begin_quiet());
+
+  const sensor::Reading r = wait_for_reading();
+  const bool urgent = recorder::record_once() != 0;
+
+  if (alert::judge_wake(r.temp_c100, r.valid)) {
+    ESP_LOGW(kTag, "coming up: the alarm needs raising");
+    return urgent;
+  }
+  if (!power::belongs_asleep()) {
+    ESP_LOGI(kTag, "coming up: on a supply this mode stays awake on");
+    return urgent;
+  }
+  if (cloud::upload_due_while_asleep()) {
+    const esp_err_t e = cloud::upload_while_asleep(kQuietUploadTimeoutMs);
+    if (e != ESP_OK && e != ESP_ERR_TIMEOUT) {
+      ESP_LOGI(kTag, "no upload: %s", esp_err_to_name(e));
+    }
+  }
+  power::sleep_until_next_record();
+}
+
 }  // namespace
 
 extern "C" void app_main(void) {
@@ -90,6 +151,7 @@ extern "C" void app_main(void) {
   if (power::wake_cause() != power::Wake::PowerOn) {
     ESP_LOGI(kTag, "woke: %s", power::wake_name(power::wake_cause()));
   }
+  const bool quiet_urgent = power::wake_cause() == power::Wake::Timer && quiet_wake();
 
 #if CONFIG_THERMOPOST_RUN_BRINGUP_PROBE
   bringup::run();
@@ -121,6 +183,8 @@ extern "C" void app_main(void) {
   // samples, logs and alarms. It just cannot stamp a wall-clock time or upload —
   // and this board has no RTC, so the clock is genuinely the radio's to bring.
   step("cloud", cloud::init());
+  // The record a quiet wake escalated over was written before the uploader existed.
+  if (quiet_urgent) cloud::notify_new_record(/*urgent=*/true);
   // Last, and needing everything above it: the band from settings, the readings
   // from sensor, the speaker from audio. Non-fatal like the rest — a post that
   // cannot start its watchdog still shows the temperature, which is the one thing

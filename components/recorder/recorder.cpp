@@ -164,7 +164,8 @@ uint8_t interval_flags(const Sample& s) {
   return f;
 }
 
-void write_one() {
+// Returns the record's flags, so a quiet wake knows what it just wrote.
+uint8_t write_one() {
   const Sample s = close_aggregate();
   const bool valid = s.mean_c100 != kInvalidTempC100;
 
@@ -196,7 +197,7 @@ void write_one() {
   const esp_err_t err = storage::append(rec);
   if (err != ESP_OK) {
     ESP_LOGW(kTag, "append failed: %s", esp_err_to_name(err));
-    return;
+    return rec.flags;
   }
 
   // Only after the append succeeded, for the same reason the counter below is:
@@ -228,6 +229,7 @@ void write_one() {
     ESP_LOGW(kTag, "#%lu no valid reading in the whole interval",
              static_cast<unsigned long>(storage::next_index() - 1));
   }
+  return rec.flags;
 }
 
 void task(void*) {
@@ -311,6 +313,10 @@ esp_err_t init() {
   if (s_lock == nullptr) return ESP_ERR_NO_MEM;
 
   reset_aggregate();
+  // Emptied first: a quiet wake that escalated has already pushed its record, and the
+  // backfill below brings that one back from the log.
+  s_count = 0;
+  s_head = 0;
   backfill();
   if (sleepstate::resumed()) s_written = s_written_mirror;
   sleepstate::on_sleep(&save_for_sleep);
@@ -325,6 +331,18 @@ esp_err_t init() {
   s_inited = true;
   ESP_LOGI(kTag, "logging every %us", static_cast<unsigned>(settings::get().interval_s));
   return ESP_OK;
+}
+
+uint8_t record_once() {
+  if (sleepstate::resumed()) s_written = s_written_mirror;
+  reset_aggregate();
+  accumulate();
+  const uint8_t flags = write_one();
+  reset_aggregate();
+  // Saved now rather than by the hook, which only init() registers: this boot either
+  // sleeps straight after or comes up fully, and init() restores from this copy.
+  s_written_mirror = s_written;
+  return flags;
 }
 
 size_t history(Sample* out, size_t n) {

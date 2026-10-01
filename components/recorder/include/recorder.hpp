@@ -43,6 +43,11 @@ struct Sample {
 // Safe to call once; ESP_ERR_INVALID_STATE on a second call.
 esp_err_t init();
 
+// A quiet wake's one record: the sensor's latest reading, written as a one-sample
+// interval, with no task and no backfill. Returns the record's storage flags.
+// Requires the same components as init(); init() may still follow it.
+uint8_t record_once();
+
 // Copy up to `n` of the most recent samples into `out`, oldest first. Returns how
 // many were written, which is fewer than `n` until the ring fills. Cheap enough
 // to call from the LVGL task, but see generation() before doing it every frame.

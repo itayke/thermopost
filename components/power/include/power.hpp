@@ -8,8 +8,8 @@
 // left to do it with.
 //
 // The policy is a ladder: full brightness while someone is interacting, dimmed
-// after a while, panel dark after longer, and — once state survives a wake — deep
-// sleep, which for now is only reachable by hand, through Turn Off. Every rung
+// after a while, panel dark after longer, and then deep sleep between records, which
+// is built but not yet armed (see kAutoSleepReady in power.cpp). Every rung
 // below the first is invisible to the parts of the device that matter — the
 // sensor keeps sampling, the recorder keeps writing and the alarm keeps watching
 // on all of them. A dark post is still a working post; that is the whole point of
@@ -20,7 +20,7 @@ enum class Tier : uint8_t {
   Active = 0,  // full brightness
   Dim,         // backlight down, screen still readable at arm's length
   Dark,        // panel blanked; everything else still running
-  Asleep,      // deep sleep — reached only by turn_off(); see power.cpp
+  Asleep,      // deep sleep between records; also what a quiet wake reports
 };
 
 // Configure the battery sense channel and start the ladder. Requires
@@ -58,10 +58,10 @@ struct Battery {
 };
 Battery battery();
 
-// Does the ladder actually reach the fourth rung on its own? Deep sleep itself is
-// wired — turn_off() below is one — but the post does not yet put *itself* to
-// sleep, and the Power settings page says so on its footer rather than offering
-// two modes that quietly do half of what they claim.
+// Does the ladder actually reach the fourth rung on its own? The sleep and the quiet
+// wake are built, but not armed until proved on the bench, and the Power settings page
+// says so on its footer rather than offering two modes that quietly do half of what
+// they claim.
 bool auto_sleep_armed();
 
 // Is the post running on external power?
@@ -107,9 +107,22 @@ bool resume_from_off();
 
 // Deep sleep for `seconds`, waking early on a touch or the sensor's ALERT line. A
 // bench instrument, reached from the `power nap` command: it is how the sleep
-// current is metered and how the ALERT wire is proved to wake the board, before
-// anything sleeps on its own. Comes back as a full boot. Never returns.
+// current is metered and the quiet wake rehearsed before anything sleeps on its own.
+// The timer brings it back quietly, so from there it keeps sleeping between records
+// until touched. Never returns.
 [[noreturn]] void nap(uint32_t seconds);
+
+// The quiet wake's share: battery sense and the supply verdict, with no ladder, no
+// command and no screen. tier() answers Asleep until init() takes over, which it may.
+esp_err_t begin_quiet();
+
+// Does this post, in its power mode and on the supply begin_quiet() judged, belong
+// asleep? False means a quiet wake has to come up properly.
+bool belongs_asleep();
+
+// Deep sleep until the next record is due: the interval, less this boot's time awake on
+// a quiet wake. Wakes early on a touch or the ALERT line. Never returns.
+[[noreturn]] void sleep_until_next_record();
 
 // Push the ladder back to the top — the effect a touch has, available to anything
 // else that decides the screen has earned being lit.

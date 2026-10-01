@@ -24,8 +24,9 @@ void begin_boot(bool kept_wake);
 // This boot continues the device that went to sleep: its mirrors are valid.
 bool resumed();
 
-// Called by a component's init, once. The hook fills its mirror; it runs from the
-// task that puts the post to sleep, so it must take whatever lock its data needs.
+// Called by a component's init. A hook already registered is ignored. The hook fills
+// its mirror; it runs from the task that puts the post to sleep, so it must take
+// whatever lock its data needs.
 void on_sleep(void (*hook)());
 
 // Just before a state-keeping deep sleep: run every hook, then seal the mirrors.

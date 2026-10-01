@@ -44,6 +44,10 @@ void begin_boot(bool kept_wake) {
 bool resumed() { return s_resumed; }
 
 void on_sleep(void (*hook)()) {
+  // A quiet wake that escalates registers from both of its passes; once is enough.
+  for (int i = 0; i < s_hook_count; ++i) {
+    if (s_hooks[i] == hook) return;
+  }
   if (s_hook_count >= kMaxHooks) {
     // Loud rather than silent: a mirror that is never filled is a device that
     // wakes up forgetting something, and nothing else would say so.

@@ -107,6 +107,8 @@ constexpr EventBits_t kBitNewRecord = 1u << 1;
 constexpr EventBits_t kBitReconnect = 1u << 2;  // the backoff timer came due
 // A record the cadence below is not allowed to hold back — see notify_new_record().
 constexpr EventBits_t kBitUrgent    = 1u << 3;
+// The queue just drained to empty. Only a quiet wake waits on it.
+constexpr EventBits_t kBitDrained   = 1u << 4;
 
 // --- mDNS -------------------------------------------------------------------
 // What makes a fleet usable: a laptop walks every post by name instead of
@@ -178,7 +180,12 @@ int64_t   s_next_upload_ms = 0;
 // zero, finds the upload due, and brings the radio up — the whole cadence undone.
 RTC_DATA_ATTR int64_t s_next_upload_wall_ms;
 
-void save_for_sleep() { s_next_upload_wall_ms = sleepstate::to_wall_ms(s_next_upload_ms); }
+// A quiet wake's upload: no setup AP, no form, no mDNS, no console. Set once, before
+// init(), by upload_while_asleep().
+bool s_quiet = false;
+// That upload ran out of time. The next try is then a cadence away rather than on the
+// very next wake, which would bring the radio up every record while the AP is down.
+bool s_quiet_gave_up = false;
 
 // The dedupe key the Sheet groups on: this board's MAC as lowercase hex. Read
 // from efuse once at init — stable for the life of the hardware, and unlike the
@@ -615,6 +622,14 @@ void advance_upload_deadline() {
   if (s_next_upload_ms <= now) s_next_upload_ms = now + cadence_ms;
 }
 
+void save_for_sleep() {
+  int64_t next = s_next_upload_ms;
+  if (s_quiet_gave_up) next = now_ms() + static_cast<int64_t>(cadence_min()) * kMsPerMin;
+  s_next_upload_wall_ms = sleepstate::to_wall_ms(next);
+  // Stopped rather than cut by the sleep, as IDF asks, so the AP sees the post leave.
+  if (s_started) esp_wifi_stop();
+}
+
 void sync_task(void* /*arg*/) {
   ESP_LOGI(kTag, "sync task started (stack %u, core %d)",
            static_cast<unsigned>(kSyncTaskStack), static_cast<int>(kSyncTaskCore));
@@ -661,6 +676,7 @@ void sync_task(void* /*arg*/) {
         // the link dropped leaves the deadline in the past on purpose, so the next
         // wake retries instead of waiting out another cadence.
         advance_upload_deadline();
+        xEventGroupSetBits(s_events, kBitDrained);
         break;
       }
       set_sync_state(SyncState::Backoff);
@@ -743,7 +759,7 @@ void on_event(void* /*arg*/, esp_event_base_t base, int32_t id, void* data) {
       portal::stop_ap();
       esp_wifi_set_mode(WIFI_MODE_STA);
     }
-    start_mdns();
+    if (!s_quiet) start_mdns();
     start_sntp();  // correct the clock now that we are online (idempotent)
     xEventGroupSetBits(s_events, kBitGotIp);
     return;
@@ -907,6 +923,8 @@ esp_err_t init() {
 
   load_config();
   compute_device_id();
+  // Before the radio: no endpoint means nothing to send, so no Wi-Fi to start.
+  if (s_quiet && !configured()) return ESP_ERR_NOT_FOUND;
 
   // We are the first owner of the default event loop and of netif today; guard
   // both against ESP_ERR_INVALID_STATE so a future second user cannot break this
@@ -939,6 +957,8 @@ esp_err_t init() {
   apply_identity();
 
   const bool provisioned = has_stored_creds();
+  // A sleeping post with no network goes back to sleep; it never opens the setup AP.
+  if (s_quiet && !provisioned) return ESP_ERR_NOT_FOUND;
   if (provisioned) {
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), kTag, "wifi_mode");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), kTag, "wifi_start");
@@ -967,10 +987,11 @@ esp_err_t init() {
   // Started whichever way the radio came up, and never stopped again: the form
   // is where thresholds and the name are edited, not just where credentials
   // arrive once. See cloud_portal.hpp for why the two halves are separate.
-  const esp_err_t srv = portal::start_server(&on_portal_submit);
-  if (srv != ESP_OK) ESP_LOGE(kTag, "config form unavailable: %s", esp_err_to_name(srv));
-
-  register_commands();
+  if (!s_quiet) {
+    const esp_err_t srv = portal::start_server(&on_portal_submit);
+    if (srv != ESP_OK) ESP_LOGE(kTag, "config form unavailable: %s", esp_err_to_name(srv));
+    register_commands();
+  }
 
   // Before the sync task, which is the only other reader of the deadline.
   if (sleepstate::resumed()) s_next_upload_ms = sleepstate::to_mono_ms(s_next_upload_wall_ms);
@@ -1146,6 +1167,25 @@ void resync() {
   persist_hwm(first);
   notify_new_record(/*urgent=*/true);
   ESP_LOGI(kTag, "hwm rewound to %lu", static_cast<unsigned long>(first));
+}
+
+bool upload_due_while_asleep() {
+  // The same restore init() does, early: the answer decides whether init() runs at all.
+  if (sleepstate::resumed()) s_next_upload_ms = sleepstate::to_mono_ms(s_next_upload_wall_ms);
+  return upload_due();
+}
+
+esp_err_t upload_while_asleep(uint32_t timeout_ms) {
+  s_quiet = true;
+  const esp_err_t e = init();
+  if (e != ESP_OK) return e;
+  const EventBits_t got = xEventGroupWaitBits(s_events, kBitDrained, pdTRUE, pdFALSE,
+                                              pdMS_TO_TICKS(timeout_ms));
+  if (got & kBitDrained) return ESP_OK;
+  s_quiet_gave_up = true;
+  ESP_LOGW(kTag, "no upload within %lu ms; next try a cadence from now",
+           static_cast<unsigned long>(timeout_ms));
+  return ESP_ERR_TIMEOUT;
 }
 
 void notify_new_record(bool urgent) {

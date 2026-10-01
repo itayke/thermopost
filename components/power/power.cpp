@@ -18,6 +18,7 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
+#include "esp_check.h"
 #include "esp_console.h"
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
@@ -208,11 +209,13 @@ constexpr uint32_t kFractionDen     = 3;
 // itself to sleep — and this is the gate rather than missing code so the reason
 // travels with it.
 //
-// What remains: the quiet timer wake that samples and sleeps without lighting LVGL,
-// and the ALERT wire proved on the board (`power` says "line works"). The state a
-// wake has to keep is already mirrored — see the sleepstate component, which `power
-// nap` exercises today.
+// What remains is proof, not code: the quiet wake run on the bench through `power nap`,
+// and the sleep current metered. The ALERT wire is optional — without it a sleeping
+// post sees the band only at each record.
 constexpr bool kAutoSleepReady = false;
+
+// Floor on a quiet wake's sleep, for an interval already used up by the wake itself.
+constexpr uint32_t kDozeMinS = 1;
 
 constexpr int kTaskStack = 3072;
 // Below the alarm and the sampler, above nothing in particular: a late tier
@@ -250,12 +253,19 @@ bool     s_external = true;  // assumed until the first sample says otherwise
 // as unplugged, because the sticky flag outlives the cable. A reboot clears it, and
 // the wire from VBUS would retire the whole question.
 bool     s_ever_saw_host = false;
-// Across deep sleep. Lost, a woken post would judge its supply by pack voltage
-// alone — the heuristic that is wrong for minutes after a full pack is unplugged.
-RTC_DATA_ATTR bool s_ever_saw_host_mirror;
 
-// A bool the power task alone writes, so no lock.
-void save_for_sleep() { s_ever_saw_host_mirror = s_ever_saw_host; }
+// The supply verdict across deep sleep. Lost, a woken post would judge its supply by
+// pack voltage alone — the heuristic that is wrong for minutes after a full pack is
+// unplugged — and a post with no battery sense would assume external and never doze.
+struct SupplyMirror {
+  bool ever_saw_host;
+  bool external;
+};
+RTC_DATA_ATTR SupplyMirror s_supply_mirror;
+
+// A timer wake that has not come up fully: no ladder, no screen, tier() reads Asleep.
+bool s_quiet = false;
+bool s_prepared = false;
 // When something that is not a touch last insisted the device was in use — a
 // serial `power wake`, or anything else that decides the screen has earned being
 // lit. LVGL's own counter cannot be reset from outside without faking an input
@@ -268,6 +278,11 @@ struct Lock {
   explicit Lock(TickType_t t = portMAX_DELAY) : ok(xSemaphoreTake(s_mutex, t) == pdTRUE) {}
   ~Lock() { if (ok) xSemaphoreGive(s_mutex); }
 };
+
+void save_for_sleep() {
+  Lock l;
+  s_supply_mirror = {s_ever_saw_host, s_external};
+}
 
 const char* tier_name(Tier t) {
   switch (t) {
@@ -387,6 +402,12 @@ void sample_battery(Battery* out) {
   }
 }
 
+// The pack's verdict, with hysteresis; the previous one when there is no usable reading.
+bool external_from_pack(bool prev, const Battery& b) {
+  if (!b.present || !b.calibrated) return prev;
+  return prev ? b.pack_mv >= kExternalFallMv : b.pack_mv >= kExternalRiseMv;
+}
+
 void task(void*) {
   TickType_t last = xTaskGetTickCount();
   Tier applied = Tier::Active;
@@ -415,12 +436,7 @@ void task(void*) {
     const bool host = usb_host_present();
     if (host) s_ever_saw_host = true;
 
-    bool external = s_external;
-    if (s_ever_saw_host) {
-      external = host;
-    } else if (b.present && b.calibrated) {
-      external = s_external ? b.pack_mv >= kExternalFallMv : b.pack_mv >= kExternalRiseMv;
-    }
+    const bool external = s_ever_saw_host ? host : external_from_pack(s_external, b);
 
     Tier want;
     {
@@ -449,6 +465,7 @@ void task(void*) {
       apply(want);
       applied = want;
     }
+    if (want == Tier::Asleep) sleep_until_next_record();
   }
 }
 
@@ -497,7 +514,7 @@ int cmd_power(int argc, char** argv) {
   std::printf("tier      %s\n", tier_name(tier()));
   std::printf("idle      %" PRIu32 " s (dim at %" PRIu32 ", dark at %" PRIu32 ")\n",
               idle_ms() / kMsPerSec, kDimAfterMs / kMsPerSec, kDarkAfterMs / kMsPerSec);
-  std::printf("auto sleep %s\n", kAutoSleepReady ? "armed" : "not wired yet");
+  std::printf("auto sleep %s\n", kAutoSleepReady ? "armed" : "not armed yet");
   std::printf("last wake %s\n", wake_name(s_wake));
   print_alert_line();
 
@@ -565,15 +582,18 @@ esp_err_t init_adc() {
   return ESP_OK;
 }
 
-}  // namespace
-
-esp_err_t init() {
-  if (s_inited) return ESP_ERR_INVALID_STATE;
+// What both a quiet wake and a full boot need, once: the lock, the restored supply,
+// battery sense and the ALERT input.
+esp_err_t prepare() {
+  if (s_prepared) return ESP_OK;
 
   s_mutex = xSemaphoreCreateMutex();
   if (s_mutex == nullptr) return ESP_ERR_NO_MEM;
 
-  if (sleepstate::resumed()) s_ever_saw_host = s_ever_saw_host_mirror;
+  if (sleepstate::resumed()) {
+    s_ever_saw_host = s_supply_mirror.ever_saw_host;
+    s_external = s_supply_mirror.external;
+  }
   sleepstate::on_sleep(&save_for_sleep);
 
   const esp_err_t adc_err = init_adc();
@@ -583,13 +603,6 @@ esp_err_t init() {
     // saves power on any supply.
     ESP_LOGW(kTag, "battery sense unavailable: %s", esp_err_to_name(adc_err));
     s_adc = nullptr;
-  }
-
-  if (xTaskCreatePinnedToCore(task, "power", kTaskStack, nullptr, kTaskPrio, nullptr,
-                              kTaskCore) != pdPASS) {
-    vSemaphoreDelete(s_mutex);
-    s_mutex = nullptr;
-    return ESP_ERR_NO_MEM;
   }
 
   // An input with a pull-up while awake, so `power` can read the line. The pull-up
@@ -603,12 +616,51 @@ esp_err_t init() {
   };
   gpio_config(&alert_cfg);
 
+  s_prepared = true;
+  return ESP_OK;
+}
+
+}  // namespace
+
+esp_err_t init() {
+  if (s_inited) return ESP_ERR_INVALID_STATE;
+  ESP_RETURN_ON_ERROR(prepare(), kTag, "prepare");
+  {
+    Lock l;
+    s_quiet = false;
+    s_tier = Tier::Active;
+  }
+
+  if (xTaskCreatePinnedToCore(task, "power", kTaskStack, nullptr, kTaskPrio, nullptr,
+                              kTaskCore) != pdPASS) {
+    return ESP_ERR_NO_MEM;
+  }
+
   register_command();
   s_inited = true;
   ESP_LOGI(kTag, "dim at %" PRIu32 " s, dark at %" PRIu32 " s, auto sleep %s",
            kDimAfterMs / kMsPerSec, kDarkAfterMs / kMsPerSec,
-           kAutoSleepReady ? "armed" : "not wired yet");
+           kAutoSleepReady ? "armed" : "not armed yet");
   return ESP_OK;
+}
+
+esp_err_t begin_quiet() {
+  ESP_RETURN_ON_ERROR(prepare(), kTag, "prepare");
+  Battery b;
+  sample_battery(&b);
+  // The host signal is not settled this early — the monitor reads connected until a
+  // few ticks pass, and a host takes longer than that to enumerate again. So a post
+  // that has met one keeps the verdict it slept with; any other judges by the pack.
+  Lock l;
+  s_quiet = true;
+  s_tier = Tier::Asleep;
+  s_battery = b;
+  if (!s_ever_saw_host) s_external = external_from_pack(s_external, b);
+  return ESP_OK;
+}
+
+bool belongs_asleep() {
+  return sleeps(settings::get().power_mode, on_external_power());
 }
 
 Tier tier() {
@@ -684,19 +736,39 @@ void turn_off() {
   sleep_now();
 }
 
-void nap(uint32_t seconds) {
+namespace {
+
+// The state-keeping sleep behind both nap() and the automatic one.
+[[noreturn]] void doze(uint32_t seconds) {
   // Comparator mode holds ALERT low for as long as the reading is out of band, so an
-  // ext1 armed now would fire at once and every nap would be a reboot.
+  // ext1 armed now would fire at once and every doze would be a reboot.
   const bool sensor = !alert_line_asserted();
-  if (!sensor) ESP_LOGW(kTag, "ALERT is already asserted; napping without it");
-  ESP_LOGW(kTag, "napping %" PRIu32 " s; touch, ALERT or the timer brings it back",
-           seconds);
-  display::set_on(false);
-  // Sealed, unlike Off: a nap rehearses the automatic sleep, so it comes back as the
-  // same device — an acknowledged alarm stays acknowledged.
+  if (!sensor) ESP_LOGI(kTag, "ALERT is already asserted; sleeping without it");
+  ESP_LOGI(kTag, "sleeping %" PRIu32 " s", seconds);
+  display::set_on(false);  // a no-op on a quiet wake, which never lit it
+  // Sealed, unlike Off: this sleep comes back as the same device, so an acknowledged
+  // alarm stays acknowledged.
   sleepstate::save_all();
   arm_wakes(seconds, sensor);
   sleep_now();
+}
+
+}  // namespace
+
+void nap(uint32_t seconds) {
+  ESP_LOGW(kTag, "napping; a touch brings it back, the timer only for a record");
+  doze(seconds);
+}
+
+void sleep_until_next_record() {
+  const uint32_t interval_s = settings::get().interval_s;
+  // A quiet wake took its record at boot, so its own time awake comes off the interval.
+  // The ladder sleeps a whole one: the record in progress is abandoned, not owed.
+  uint32_t awake_s = 0;
+  if (s_quiet) {
+    awake_s = static_cast<uint32_t>(esp_timer_get_time() / static_cast<int64_t>(kUsPerSec));
+  }
+  doze(interval_s > awake_s + kDozeMinS ? interval_s - awake_s : kDozeMinS);
 }
 
 bool resume_from_off() {

@@ -135,6 +135,16 @@ void endpoint(char* out, size_t cap);
 // run against a populated Sheet: the Apps Script dedupes on device + index.
 void resync();
 
+// --- A quiet wake's upload --------------------------------------------------
+// Is the dark cadence's deadline due? Requires settings::init() and power::begin_quiet(),
+// so the cadence read is the dark one. Starts nothing.
+bool upload_due_while_asleep();
+
+// Join, drain the queue, and return, with no setup AP, form, mDNS or console. Waits up
+// to `timeout_ms`; a timeout pushes the next try a cadence away. ESP_ERR_NOT_FOUND
+// when there is no network or endpoint to send to. Replaces init() for this boot.
+esp_err_t upload_while_asleep(uint32_t timeout_ms);
+
 // Tell the uploader a record was just appended. Lock-free (it sets an event
 // bit), so `recorder` can call it straight from its own task.
 //

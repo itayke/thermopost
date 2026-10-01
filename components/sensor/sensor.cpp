@@ -304,11 +304,15 @@ void log_not_found() {
 void sample_task(void*) {
   TickType_t next_wake = xTaskGetTickCount();
   uint32_t since_reprobe_ms = 0;
+  // The first pass reads at once: a quiet wake records the first sample and sleeps,
+  // so a period spent waiting for it is a period of awake current.
+  bool first = true;
 
   for (;;) {
     // DelayUntil, not Delay: the cadence is anchored to a wall-clock-ish tick
     // count, so a slow read doesn't push every later sample out with it.
-    xTaskDelayUntil(&next_wake, pdMS_TO_TICKS(kSamplePeriodMs));
+    if (!first) xTaskDelayUntil(&next_wake, pdMS_TO_TICKS(kSamplePeriodMs));
+    first = false;
 
     if (s_dev == nullptr) {
       since_reprobe_ms += kSamplePeriodMs;
@@ -388,6 +392,10 @@ esp_err_t init() {
   const bool found = attach();
   if (!found) log_not_found();
 
+  // The first conversion is only valid one t_CONV after the part starts converting,
+  // so wait it out before the task, whose first pass reads straight away.
+  if (found) vTaskDelay(pdMS_TO_TICKS(kConversionMs));
+
   if (xTaskCreatePinnedToCore(sample_task, "sensor", kTaskStack, nullptr,
                               kTaskPrio, nullptr, kTaskCore) != pdPASS) {
     detach();
@@ -395,13 +403,7 @@ esp_err_t init() {
   }
   s_started = true;
 
-  if (!found) return ESP_ERR_NOT_FOUND;
-
-  // The first conversion is only valid one t_CONV after the part starts
-  // converting, so wait it out here rather than letting the task publish a
-  // stale register on its first pass.
-  vTaskDelay(pdMS_TO_TICKS(kConversionMs));
-  return ESP_OK;
+  return found ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
 Reading latest() {

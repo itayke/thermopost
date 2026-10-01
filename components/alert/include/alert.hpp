@@ -24,6 +24,11 @@ namespace thermopost::alert {
 // Safe to call once; ESP_ERR_INVALID_STATE on a second call.
 esp_err_t init();
 
+// A quiet wake's alarm check: one reading stepped against the episode the post went
+// to sleep with, saved for the next wake. True when the alarm needs raising, which
+// means the post has to come up properly. Requires settings::init(); no task, no tone.
+bool judge_wake(int16_t temp_c100, bool valid);
+
 // The current alarm state. Safe before init() — it reads as Normal until the
 // first tick, which is what the UI should draw anyway. Cheap enough for the
 // LVGL task's refresh.

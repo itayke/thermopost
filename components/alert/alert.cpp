@@ -81,10 +81,17 @@ struct SleepMirror {
 };
 RTC_DATA_ATTR SleepMirror s_mirror;
 
+SleepMirror to_mirror(const Status& s) {
+  return {s.state, s.acked, sleepstate::to_wall_ms(s.snooze_until_ms)};
+}
+
+Status from_mirror() {
+  return {s_mirror.state, s_mirror.acked, sleepstate::to_mono_ms(s_mirror.snooze_until_wall_ms)};
+}
+
 void save_for_sleep() {
   Lock l;
-  s_mirror = {s_status.state, s_status.acked,
-              sleepstate::to_wall_ms(s_status.snooze_until_ms)};
+  s_mirror = to_mirror(s_status);
 }
 
 const char* state_name(State s) {
@@ -173,10 +180,7 @@ esp_err_t init() {
   if (s_mutex == nullptr) return ESP_ERR_NO_MEM;
 
   // Before the task, so its first tick judges the restored episode, not a fresh one.
-  if (sleepstate::resumed()) {
-    s_status = {s_mirror.state, s_mirror.acked,
-                sleepstate::to_mono_ms(s_mirror.snooze_until_wall_ms)};
-  }
+  if (sleepstate::resumed()) s_status = from_mirror();
   sleepstate::on_sleep(&save_for_sleep);
 
   if (xTaskCreatePinnedToCore(task, "alert", kTaskStack, nullptr, kTaskPrio, nullptr,
@@ -191,6 +195,20 @@ esp_err_t init() {
            kTickMs, kSnoozeMinutes,
            audio::available() ? "" : " (no codec — the alarm is visual only)");
   return ESP_OK;
+}
+
+bool judge_wake(int16_t temp_c100, bool valid) {
+  const Status was = sleepstate::resumed() ? from_mirror() : kInitialStatus;
+  const Thresholds t = settings::thresholds();
+  const Status is = step(was, temp_c100, valid, t, now_ms());
+  if (is.state != was.state) {
+    ESP_LOGW(kTag, "%s -> %s while asleep (%.2f C)", state_name(was.state),
+             state_name(is.state), valid ? temp_c100 / 100.0 : 0.0);
+  }
+  // Written straight back: this boot either sleeps again with no hook registered, or
+  // comes up fully, and init() restores from this copy.
+  s_mirror = to_mirror(is);
+  return should_alert(is);
 }
 
 Status status() {

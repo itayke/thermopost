@@ -10,9 +10,9 @@ By Itay Keren <itay@untame.com>. Copyright (c) 2026 Itay Keren.
 
 > **Working, and not finished.** Everything the device does day to day is built and
 > most of it is confirmed on hardware: the screens, the settings, the alarm, the
-> Sheet upload, the idle ladder and battery sense. Deep sleep is wired — Turn Off
-> uses it — but the post does not yet put *itself* to sleep, which is gated on
-> mirroring state through RTC memory. See [Status](#status).
+> Sheet upload, the idle ladder and battery sense. Sleeping between records is built
+> too — a quiet timer wake that records and goes back down — but not yet armed: it
+> waits on a bench run and a measured sleep current. See [Status](#status).
 
 ## Hardware
 
@@ -387,8 +387,8 @@ lands outside them, in silicon, at roughly 200 µA, **whether or not the SoC is
 running**. `alert::init()`'s tick pushes the configured band down to it every second,
 so the part is always judging the same limits the firmware is.
 
-That is the whole reason sleeping on idle is possible at all. A post asleep between
-records is blind between them; a post whose *sensor* is awake is not. Wired to
+That is what lets a sleeping post keep watching. A post asleep between records is
+blind between them; a post whose *sensor* is awake is not. Wired to
 `board::kSensorAlert` (`IO21`, RTC-capable, on the expansion header) the line becomes
 a wake source, and an excursion reaches the post within one 250 ms conversion —
 **sooner than this firmware notices while fully awake**, since a running post only
@@ -439,7 +439,7 @@ recorder keeps writing, the alarm keeps watching. A dark post is a working post.
 | **Active** | — | Full brightness |
 | **Dim** | `THERMOPOST_POWER_DIM_SECONDS` (60) | Backlight to `THERMOPOST_POWER_DIM_PERCENT` (20%) |
 | **Dark** | `THERMOPOST_POWER_DARK_SECONDS` (180) | Panel blanked with `set_on(false)` — it stops scanning, but the framebuffer survives, so coming back is the screen that was already there rather than a repaint from nothing |
-| **Asleep** | — | Deep sleep. Reached by the *Turn Off* button, not yet by the ladder itself; see below |
+| **Asleep** | the power mode's sleep delay | Deep sleep between records, waking quietly to take each one. Built, not yet armed; see below |
 
 The main screen carries the charge as a **drawn meter at the top left**, before
 the clock, with a bolt between them when a charger is detected. Drawn rather than
@@ -476,28 +476,48 @@ and a post that beeps in the dark makes someone hunt for a device instead of
 reading it. Snooze and Off therefore pick up a second meaning for free: they are
 also what lets the screen go back down.
 
-#### Sleeping on idle is gated, on purpose
+#### Sleeping on idle: built, and gated until proved
 
 Deep sleep itself is wired and works: **Turn Off** is a real one, with a real wake
-source, and the divider it needed to tell a charging pack from a full one is now
-known. What is still gated is the *automatic* fourth rung — the post putting
-itself to sleep — and that is a `kAutoSleepReady = false` in
-[`power.cpp`](components/power/power.cpp) rather than code that isn't written yet,
-so the reason travels with it.
+source. The *automatic* fourth rung — the post putting itself to sleep — is built as
+well, and held behind `kAutoSleepReady = false` in
+[`power.cpp`](components/power/power.cpp) until it has run on the bench and the sleep
+current has been metered. The gate is a constant rather than missing code so the
+reason travels with it.
 
-**The blocker is a wire, not a data structure.** Dim and dark are invisible to what
-the post is for — the sensor keeps sampling, the recorder keeps writing, the alarm
-keeps watching. Deep sleep is not: it stops all three. A post that duty-cycles
-between records is blind between them, so an excursion that starts and ends inside
-one interval produces no alarm and no row. For a device whose entire job is catching
-excursions, that is not an acceptable trade, and no amount of firmware recovers it —
-a sleeping post samples when it is awake.
+**A sleeping post wakes three ways, and only one of them lights the screen.**
 
-The MCP9808 answers it in hardware, which is why it is the part on the end of the
-lead. See **The hardware alert window** below: the sensor watches the band in its own
-silicon while the SoC is off, and `IO21` is reserved to carry its ALERT pin to an
-RTC-capable input. Until that line is fitted and proved, sleeping on idle should not
-ship at all.
+| wake | what runs | then |
+|---|---|---|
+| **timer**, every record | storage, settings, the sensor, battery sense — no display, no LVGL, no touch, no codec | one record, the alarm judged against the episode it slept with, and back to sleep |
+| **timer**, dark upload due | the same, plus Wi-Fi in station mode and the upload queue — no setup AP, no form, no mDNS | drains to the Sheet, then sleeps |
+| **touch** or **ALERT** | the full boot | the UI, the ladder, and down again when idle |
+
+The timer wake is `quiet_wake()` in [`app_main.cpp`](main/app_main.cpp). It sleeps
+again for the interval less the time it was awake, so records keep their spacing,
+and it **comes up properly** — continues into the full boot — when it finds
+something a person has to see:
+
+- **The alarm needs raising.** The reading is stepped through `alert_logic` against
+  the mirrored episode, so an acknowledged excursion that is still out of band stays
+  asleep, while a new one, a sensor fault or an expired snooze comes up and sounds.
+  A flagged record that escalates is handed to the uploader as urgent.
+- **The supply no longer sleeps.** In *USB on*, a pack that has risen to
+  the charger's voltage means external power, and the post stays up. The USB-host
+  signal is not trusted this early in a boot — it reads "connected" until a few ticks
+  pass — so a post that has met a host keeps the verdict it slept with, and a touch is
+  how it notices a computer.
+
+**A quiet upload that fails backs off.** If the link or the Sheet does not answer
+within `kQuietUploadTimeoutMs`, the next try is a dark cadence away rather than on the next wake — an AP
+that is down overnight would otherwise bring the radio up every minute until morning.
+
+**Without the ALERT wire, a sleeping post sees the band only at each record.** An
+excursion that starts and ends between two wakes produces no alarm and no row. That
+trade is accepted for now, because fitting the wire means changing the housing. The
+firmware does not need it: an unwired `IO21` sits high on its pull-up, so `ext1`
+simply never fires, and fitting the wire later starts it working with no change here.
+`kAutoSleepReady` is about the bench, not the wire.
 
 **What a wake keeps.** Deep sleep loses RAM, and sleeping to save power has to come
 back as the same device it went down as. Each component that owns such state keeps
@@ -512,7 +532,11 @@ fresh boot — which is exactly why it could ship first.
 | alarm `state`, `acked`, snooze deadline | `alert` | an acknowledged alarm that forgets re-alerts on every wake, and `step()` treats a changed state as a new episode |
 | next upload deadline | `cloud` | lost, every wake finds the upload due and brings the radio up |
 | `written()` | `recorder` | a post that boots every minute would show 0 or 1 forever on the "is it still recording?" counter |
-| has a USB host ever answered | `power` | lost, a woken post judges its supply by pack voltage alone |
+| the supply verdict, and whether a USB host ever answered | `power` | lost, a woken post judges its supply by pack voltage alone, and one with no battery sense assumes external and never sleeps |
+
+A quiet wake that never starts a component leaves its mirror as it was, which is
+still right — nothing changed it. The two it does change without a full init, the
+alarm and the counter, write their mirrors straight back.
 
 **Deadlines are the trap.** Everything runs on `esp_timer`, which restarts at zero on
 every deep-sleep wake, so a deadline mirrored as-is is meaningless — a snooze would
@@ -522,13 +546,18 @@ converted back at the boundary. Absolute rather than remaining, so a deadline
 survives any number of later wakes that never touched it. `alert_logic` never sees
 the difference, which is what kept the host tests untouched.
 
-Two things need no mirror at all. The graph's ring is rebuilt from the log by
-`recorder::init()`, exactly as on a cold boot. And the recorder's in-flight interval
-does not exist on a sleeping post: one wake is one record, so the sleep *is* the
-interval.
+The graph's ring needs no mirror: `recorder::init()` rebuilds it from the log, as on
+a cold boot. Nor does the recorder's in-flight interval: one quiet wake is one record,
+so the sleep *is* the interval.
 
-`power nap` seals like the automatic sleep will, which is what makes it a faithful
-rehearsal: acknowledge an alarm, nap, and it wakes still acknowledged.
+**Rehearsing it.** `power nap 60` seals and sleeps like the automatic rung, and its
+timer brings the post back quietly — from there it keeps sleeping between records
+until touched, exactly as an armed post would. Watch it with the console: each wake
+logs `woke: timer`, the record, and `sleeping N s`. Acknowledge an alarm first and it
+stays acknowledged across wakes; let a snooze run out while asleep and the post comes
+up sounding. On USB in *USB on* mode a nap records once and comes up, because
+that mode does not sleep on external power — use *Always sleep* to watch the loop on
+the bench.
 
 #### The divider, and why USB presence is a guess
 
@@ -1210,7 +1239,7 @@ returns.
 
 ## Status
 
-**Everything is built but sleeping on idle, which is gated on one piece of plumbing.**
+**Everything is built. Sleeping on idle is held back until it has been proved on the bench.**
 
 | | |
 |---|---|
@@ -1236,7 +1265,8 @@ returns.
 | ✅ Built | alerts — the state machine driven at the sample cadence, the alarm panel with Snooze / Off, the tone in bursts |
 | ✅ Built | power — the idle ladder, alarm sleep-inhibit, battery sense and state-of-charge meter, the Power page, Turn Off |
 | ✅ Built | `shot` + `tools/screenshot.py` — real screen captures over USB, for the docs |
-| ⬜️ Not started | sleeping on idle — the fourth rung reached by the ladder rather than by hand, gated on RTC-memory mirroring |
+| ✅ Built | the quiet wake — a timer wake records, judges the alarm and uploads on the dark cadence without lighting the screen, coming up fully only for an alarm or a charger |
+| 🟨 Gated | sleeping on idle — the ladder's fourth rung, behind `kAutoSleepReady` until the quiet wake has run on the bench and the sleep current is metered |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
 power. Each step ends at something flashable and observable. (Sensor jumped
