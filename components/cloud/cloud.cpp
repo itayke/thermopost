@@ -63,7 +63,7 @@ constexpr const char* kNvsKeyHwm    = "hwm";
 // token is the sole other input and most deployments keep the default. It is a
 // soft gate, not a secret: it is readable in the binary and crosses the wire in
 // the clear. Must fit in kTokenMax - 1.
-constexpr const char* kDefaultToken = "Thermo Post (c) 2026 Itay Keren";
+constexpr const char* kDefaultToken = "Thermopost (c) 2026 Itay Keren";
 
 // --- Upload tunables -------------------------------------------------------
 // One hour of history per POST at the default one-minute cadence, which is the

@@ -83,7 +83,7 @@ cannot tell them apart, so a useful rule is `batt_pct < 20 AND ext = FALSE`.
 // This is the firmware's built-in default, so a fresh post syncs with only the
 // /exec URL set. Recommended: replace it with your own long random string
 // (<= 63 chars) and match it on each device — see step 4.
-const TOKEN = 'Thermo Post (c) 2026 Itay Keren';   // must match `cloud token`
+const TOKEN = 'Thermopost (c) 2026 Itay Keren';   // must match `cloud token`
 const SHEET = 'readings';
 
 // Column order. `device` + `index` together are the dedupe key: a batch retried
