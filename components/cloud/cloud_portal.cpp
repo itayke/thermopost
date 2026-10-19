@@ -253,7 +253,7 @@ std::string build_form_html() {
        "p.sub{color:#888;font-size:13px;margin:0 0 4px}"
        "</style></head><body><div class=c><h1>";
   append_escaped(h, s.name);
-  h += "</h1><p class=sub>Thermo Post configuration</p>"
+  h += "</h1><p class=sub>Thermopost configuration</p>"
        "<form method=POST action=/save>"
 
        "<h2>Identity</h2>"

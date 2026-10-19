@@ -1,5 +1,5 @@
 // ============================================================================
-//  Thermo Post — boot sequencer
+//  Thermopost — boot sequencer
 //
 //  A surface-temperature monitor for the LCDwiki ES3C28P (a.k.a. the Hosyond
 //  2.8" ESP32-S3 touchscreen module): samples an MCP9808 on a fixed cadence,

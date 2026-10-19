@@ -1,4 +1,4 @@
-# Thermo Post
+# Thermopost
 
 A surface-temperature monitor built on the Hosyond 2.8" ESP32-S3 touchscreen
 module. It samples an MCP9808 on a fixed cadence, shows the current reading with
@@ -849,7 +849,7 @@ otherwise show, and then clobber, a stale number. Every writer goes through the 
 
 ### The post's name
 
-Thermo Posts are meant to run in a group, one per tank, so each carries a name
+Thermoposts are meant to run in a group, one per tank, so each carries a name
 that is sent with every reading — a row in a shared Sheet is meaningless without
 knowing which tank produced it. Until one is set the post calls itself
 `Post-XXXX` after the low bytes of its MAC, which is unique across a group with
@@ -1135,7 +1135,7 @@ A separate diagnostic answers the questions the drivers depend on. It is off by
 default:
 
 ```sh
-idf.py menuconfig       # Thermo Post → Run the hardware bring-up probe at boot
+idf.py menuconfig       # Thermopost → Run the hardware bring-up probe at boot
 idf.py flash monitor
 ```
 

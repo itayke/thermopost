@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture a Thermo Post screen over USB and write it as a PNG.
+"""Capture a Thermopost screen over USB and write it as a PNG.
 
 The firmware's `shot` console command re-renders the active LVGL screen and
 prints it as base64 — see the Screenshots section of

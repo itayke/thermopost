@@ -1,4 +1,4 @@
-menu "Thermo Post"
+menu "Thermopost"
 
 config THERMOPOST_RUN_BRINGUP_PROBE
     bool "Run the hardware bring-up probe at boot"

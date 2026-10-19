@@ -127,7 +127,7 @@ constexpr uint16_t kSleepAfterDefaultS = 60;
 constexpr PowerMode kPowerModeDefault = PowerMode::OnWhenConnected;
 
 // --- Post name -------------------------------------------------------------
-// Thermo Posts are deployed in groups, one per tank, and every upload is tagged
+// Thermoposts are deployed in groups, one per tank, and every upload is tagged
 // with the post's name — a row in a shared Sheet is meaningless without knowing
 // which tank produced it.
 //

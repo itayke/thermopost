@@ -1,5 +1,5 @@
 // ============================================================================
-//  Thermo Post — hardware bring-up probe
+//  Thermopost — hardware bring-up probe
 //
 //  A surface-temperature monitor for the LCDwiki ES3C28P (a.k.a. the Hosyond
 //  2.8" ESP32-S3 touchscreen module): samples an MCP9808 on a fixed cadence,
@@ -29,7 +29,7 @@
 // It is NOT part of the normal boot: it is compiled in and run only when
 // CONFIG_THERMOPOST_RUN_BRINGUP_PROBE is set, because it is DESTRUCTIVE — it
 // erases the temperature log and resets settings to get a known start state.
-// Turn it on from `idf.py menuconfig` → Thermo Post when re-checking hardware.
+// Turn it on from `idf.py menuconfig` → Thermopost when re-checking hardware.
 
 #include "bringup_probe.hpp"
 

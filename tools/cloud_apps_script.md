@@ -9,7 +9,7 @@ firmware source, so re-deploying the script does not mean re-flashing anything.
 
 ## What a fleet changes
 
-Thermo Posts are deployed in groups, one per tank, all writing to the **same
+Thermoposts are deployed in groups, one per tank, all writing to the **same
 Sheet**. That has one consequence worth understanding before the code below
 makes sense:
 
@@ -128,7 +128,7 @@ const LOCK_WAIT_MS = 10000;
 const MS_PER_MIN = 60 * 1000;
 const MS_PER_HOUR = 60 * MS_PER_MIN;
 const SEC_PER_MIN = 60;
-const SUBJECT_PREFIX = '[Thermo Post] ';
+const SUBJECT_PREFIX = '[Thermopost] ';
 const STATE_PREFIX = 'alert:';
 
 const TEMP_WORDS = { high: 'above its maximum', low: 'below its minimum', fault: 'sensor fault' };
@@ -475,8 +475,9 @@ the URL lives in NVS rather than in firmware.
 
 ## 3. Point a post at it
 
-The captive-portal form is the eventual answer and is still being built; today it
-is the serial console (`idf.py monitor`, prompt `post>`):
+The config form takes the `/exec` URL and the token: from the setup AP on a fresh
+post, or at `http://<name>.local/` once it is on the LAN. The serial console
+(`idf.py monitor`, prompt `post>`) does the same:
 
 ```
 cloud wifi "Brewery 2G" hunter2

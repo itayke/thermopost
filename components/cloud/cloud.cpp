@@ -135,7 +135,7 @@ constexpr std::time_t kEpochValidFrom = 1'700'000'000;
 // --- Reconnect policy -------------------------------------------------------
 // espressopost gave up after six attempts and stayed down until someone did
 // something about it. That was reasonable for a device on a kitchen counter with
-// its owner standing at it. A Thermo Post sits on a tank, unattended, and the AP
+// its owner standing at it. A Thermopost sits on a tank, unattended, and the AP
 // it wants may be rebooting, or out of range while someone moves a pallet, or
 // down for an afternoon. So retries here never stop — they only slow down, from
 // a couple of seconds up to five minutes.
