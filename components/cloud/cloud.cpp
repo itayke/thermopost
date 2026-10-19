@@ -514,7 +514,7 @@ BatchResult upload_batch() {
   // therefore carries this morning's pack voltage, which is the useful answer to
   // "does this post need a visit" and the only one a single field can give.
   const power::Battery b = power::battery();
-  const bool usable = b.present && b.calibrated;
+  const bool usable = b.fitted;
   env.batt_mv  = usable ? b.pack_mv : -1;
   env.batt_pct = usable ? b.pct : -1;
   env.external = power::on_external_power();

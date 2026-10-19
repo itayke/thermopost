@@ -1,5 +1,6 @@
 #include "power.hpp"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -108,6 +109,24 @@ static_assert(kExternalFallMv < kExternalRiseMv,
 // doubles whatever it wanders by. Sixteen reads cost microseconds on a tick that
 // happens five times a second.
 constexpr int kAdcSamples = 16;
+
+// --- A missing pack ---------------------------------------------------------
+// With no pack, the TP4054 charges its own output capacitor, stops, and lets it sag,
+// so the node reads like a full cell but never settles. A fitted cell holds still,
+// charging or not. So a missing pack is a reading that is both high and restless.
+//
+// How far back the range looks: long enough to span the charge-and-sag cycle.
+constexpr uint32_t kRangeWindowMs = 5000;
+constexpr int kRangeTicks = static_cast<int>(kRangeWindowMs / kTickMs);
+// Swinging at least this much reads as bare; settling under the second reads as
+// fitted again. Both sit between the two, as measured on the bench.
+constexpr int kBareRangeMv   = 30;
+constexpr int kFittedRangeMv = 20;
+static_assert(kFittedRangeMv < kBareRangeMv, "the pack-fitted thresholds are inverted");
+// A bare charger never rests this low, so a pack sagging under load is never mistaken.
+constexpr int kBareFloorMv = 4000;
+// The swing has to last, so a burst of radio load on a real pack cannot pass for one.
+constexpr uint32_t kBareHoldMs = 10'000;
 
 // The other half of the answer, and the better half when it applies.
 //
@@ -235,6 +254,7 @@ Tier     s_tier = Tier::Active;
 Battery  s_battery = {};
 uint32_t s_idle_ms = 0;
 bool     s_external = true;  // assumed until the first sample says otherwise
+bool     s_fitted = true;    // likewise: a pack is assumed until the reading says bare
 
 // Has a USB *host* ever answered since boot?
 //
@@ -260,6 +280,7 @@ bool     s_ever_saw_host = false;
 struct SupplyMirror {
   bool ever_saw_host;
   bool external;
+  bool fitted;
 };
 RTC_DATA_ATTR SupplyMirror s_supply_mirror;
 
@@ -281,7 +302,7 @@ struct Lock {
 
 void save_for_sleep() {
   Lock l;
-  s_supply_mirror = {s_ever_saw_host, s_external};
+  s_supply_mirror = {s_ever_saw_host, s_external, s_fitted};
 }
 
 const char* tier_name(Tier t) {
@@ -378,6 +399,8 @@ void sample_battery(Battery* out) {
   out->pin_mv = 0;
   out->pack_mv = 0;
   out->pct = 0;
+  out->range_mv = 0;
+  out->fitted = false;
 
   if (s_adc == nullptr) return;
 
@@ -399,8 +422,38 @@ void sample_battery(Battery* out) {
   if (out->calibrated) {
     out->pack_mv = out->pin_mv * kDividerPerMille / 1000;
     out->pct = percent_for(out->pack_mv);
+    out->fitted = true;  // until the range says otherwise
   }
 }
+
+// Is a pack fitted? Held inside the band between the thresholds, and judged bare
+// only once the reading has been high and restless for the whole hold.
+bool fitted_from(bool prev, const Battery& b, uint32_t* bare_for_ms) {
+  if (!b.fitted) return prev;  // no usable reading: keep the last verdict
+  const bool settled = b.pack_mv < kBareFloorMv || b.range_mv < kFittedRangeMv;
+  const bool restless = b.pack_mv >= kBareFloorMv && b.range_mv >= kBareRangeMv;
+  *bare_for_ms = restless ? *bare_for_ms + kTickMs : 0;
+  if (*bare_for_ms >= kBareHoldMs) return false;
+  return settled ? true : prev;
+}
+
+// Averaged samples over the last few seconds. Averages, not single reads: a single
+// read's ADC noise is as wide as the swing being looked for.
+class RangeWindow {
+ public:
+  int add(int pack_mv) {
+    mv_[head_] = pack_mv;
+    head_ = (head_ + 1) % kRangeTicks;
+    if (count_ < kRangeTicks) ++count_;
+    const auto [lo, hi] = std::minmax_element(mv_, mv_ + count_);
+    return *hi - *lo;
+  }
+
+ private:
+  int mv_[kRangeTicks] = {};
+  int head_ = 0;
+  int count_ = 0;
+};
 
 // The pack's verdict, with hysteresis; the previous one when there is no usable reading.
 bool external_from_pack(bool prev, const Battery& b) {
@@ -412,6 +465,9 @@ void task(void*) {
   TickType_t last = xTaskGetTickCount();
   Tier applied = Tier::Active;
   bool s_last_logged_external = !s_external;  // force the first state to be logged
+  RangeWindow window;
+  uint32_t bare_for_ms = 0;
+  bool logged_fitted = s_fitted;
   apply(applied);
 
   for (;;) {
@@ -424,6 +480,7 @@ void task(void*) {
 
     Battery b;
     sample_battery(&b);
+    if (b.present && b.calibrated) b.range_mv = window.add(b.pack_mv);
 
     const settings::Settings cfg = settings::get();
     const uint32_t sleep_after_ms = static_cast<uint32_t>(cfg.sleep_after_s) * kMsPerSec;
@@ -436,7 +493,12 @@ void task(void*) {
     const bool host = usb_host_present();
     if (host) s_ever_saw_host = true;
 
-    const bool external = s_ever_saw_host ? host : external_from_pack(s_external, b);
+    const bool fitted = fitted_from(s_fitted, b, &bare_for_ms);
+    if (b.present && b.calibrated) b.fitted = fitted;
+    // A post running with no pack is on external power by definition, whatever the
+    // bare charger's level says to the threshold.
+    const bool external =
+        (s_ever_saw_host ? host : external_from_pack(s_external, b)) || !fitted;
 
     Tier want;
     {
@@ -447,6 +509,7 @@ void task(void*) {
       s_idle_ms = idle;
       s_battery = b;
       s_external = external;
+      s_fitted = fitted;
       want = tier_for(idle, alarm_active, cfg.power_mode, external, sleep_after_ms);
       s_tier = want;
     }
@@ -457,6 +520,11 @@ void task(void*) {
       s_last_logged_external = external;
       ESP_LOGI(kTag, "external power %s (usb host %s, pack %d mV)",
                external ? "yes" : "no", host ? "yes" : "no", b.pack_mv);
+    }
+    if (fitted != logged_fitted) {
+      logged_fitted = fitted;
+      ESP_LOGI(kTag, "pack %s (%d mV, ranging %d mV)", fitted ? "fitted" : "not fitted",
+               b.pack_mv, b.range_mv);
     }
 
     if (want != applied) {
@@ -526,7 +594,9 @@ int cmd_power(int argc, char** argv) {
   std::printf("external  %s\n", on_external_power() ? "yes" : "no");
   std::printf("battery   raw %d counts, %d mV at the pin\n", b.raw, b.pin_mv);
   if (b.calibrated) {
-    std::printf("pack      %d mV\n", b.pack_mv);
+    std::printf("pack      %d mV, ranging %d mV over the last %" PRIu32 " s, %s\n",
+                b.pack_mv, b.range_mv, kRangeWindowMs / kMsPerSec,
+                b.fitted ? "fitted" : "not fitted (a bare charger)");
   } else {
     std::printf("pack      uncalibrated — set kDividerPerMille in power.cpp from a\n"
                 "          meter on the pack terminals against the pin mV above,\n"
@@ -593,6 +663,7 @@ esp_err_t prepare() {
   if (sleepstate::resumed()) {
     s_ever_saw_host = s_supply_mirror.ever_saw_host;
     s_external = s_supply_mirror.external;
+    s_fitted = s_supply_mirror.fitted;
   }
   sleepstate::on_sleep(&save_for_sleep);
 
@@ -654,8 +725,10 @@ esp_err_t begin_quiet() {
   Lock l;
   s_quiet = true;
   s_tier = Tier::Asleep;
+  // Too brief a wake to see the range, so the pack keeps the verdict it slept with.
+  if (b.fitted) b.fitted = s_fitted;
   s_battery = b;
-  if (!s_ever_saw_host) s_external = external_from_pack(s_external, b);
+  if (!s_ever_saw_host) s_external = external_from_pack(s_external, b) || !s_fitted;
   return ESP_OK;
 }
 

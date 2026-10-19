@@ -483,7 +483,7 @@ void refresh(lv_timer_t* timer) {
   // what separates them: a post running on USB with no pack fitted is a normal way
   // to run one, and an empty meter would read as a fault.
   const power::Battery bat = power::battery();
-  const bool have_pack = bat.present && bat.calibrated;
+  const bool have_pack = bat.fitted;
   if (have_pack) {
     lv_obj_add_flag(s_bat_slash, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(s_bat_fill, LV_OBJ_FLAG_HIDDEN);

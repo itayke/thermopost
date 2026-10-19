@@ -55,6 +55,12 @@ struct Battery {
   // points; useful as a bar, misleading as a number, which is why the main screen
   // draws it and only the Power page prints it beside the volts it came from.
   int  pct;
+  // Lowest to highest averaged sample over the last few seconds, in pack millivolts.
+  // A fitted cell barely moves; a bare charger output swings. 0 on a quiet wake.
+  int  range_mv;
+  // A pack is there to report on: the ADC answered, the divider is known, and the
+  // reading is not a bare charger's. The one field the meter and the upload check.
+  bool fitted;
 };
 Battery battery();
 

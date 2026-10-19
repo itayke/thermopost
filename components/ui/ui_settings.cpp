@@ -641,7 +641,7 @@ constexpr const char* kOn  = "On";
 constexpr const char* kOff = "Off";
 constexpr const char* kSilentWarning = "alarms will be silent";
 constexpr const char* kAudibleFmt    = "tap Test for a %d-second alarm";
-constexpr const char* kNoCodec       = "no codec found — alarms will be visual only";
+constexpr const char* kNoCodec       = "no codec found, so alarms are visual only";
 
 // --- The test button --------------------------------------------------------
 // Two seconds is long enough to hear the beep pattern repeat and judge whether the
@@ -871,7 +871,7 @@ constexpr const char* kFooterAlwaysSleeps = "sleeps after %s, on any supply";
 // promises until the post can put itself to sleep, and a settings page that let
 // them look finished would be the page lying about the device. Says "on its own"
 // because Turn Off, one button down this same page, deep-sleeps for real.
-constexpr const char* kFooterNotArmed = "won't sleep on its own yet — dims and blanks only";
+constexpr const char* kFooterNotArmed = "won't sleep on its own yet; dims and blanks only";
 constexpr const char* kFooterOffConfirm = "tap again to switch off; a touch wakes it";
 
 int16_t sleep_index_for(uint16_t seconds) {
@@ -920,7 +920,7 @@ void refresh_footer() {
 // which of the two can be trusted.
 void refresh_battery() {
   const power::Battery b = power::battery();
-  if (!b.present || !b.calibrated) {
+  if (!b.fitted) {
     lv_label_set_text(s_pct, kNoBattery);
     lv_label_set_text(s_volts, kNoPack);
     lv_obj_set_style_text_color(s_pct, kColorMuted, LV_PART_MAIN);

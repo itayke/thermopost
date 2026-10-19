@@ -482,7 +482,8 @@ off a published curve, and printing an estimate to the digit invites it to be re
 as a measurement; a bar carries exactly the precision the estimate has. With no
 pack fitted the meter is struck through with a slash rather than merely drawn
 empty — a post running on USB alone is a normal way to run one, and an empty meter
-would read as a flat battery instead of no battery.
+would read as a flat battery instead of no battery. How the post knows a pack is
+missing is below, under external power.
 
 Idle time comes from LVGL's own inactivity counter, which the indev layer resets
 on a real press — so the ladder counts *taps* rather than interrupt edges, and
@@ -561,7 +562,7 @@ fresh boot — which is exactly why it could ship first.
 | alarm `state`, `acked`, snooze deadline | `alert` | an acknowledged alarm that forgets re-alerts on every wake, and `step()` treats a changed state as a new episode |
 | next upload deadline | `cloud` | lost, every wake finds the upload due and brings the radio up |
 | `written()` | `recorder` | a post that boots every minute would show 0 or 1 forever on the "is it still recording?" counter |
-| the supply verdict, and whether a USB host ever answered | `power` | lost, a woken post judges its supply by pack voltage alone, and one with no battery sense assumes external and never sleeps |
+| the supply verdict, whether a USB host ever answered, and whether a pack is fitted | `power` | lost, a woken post judges its supply by pack voltage alone, and one with no battery sense assumes external and never sleeps |
 
 A quiet wake that never starts a component leaves its mirror as it was, which is
 still right — nothing changed it. The two it does change without a full init, the
@@ -639,6 +640,19 @@ will never be considered as connected", for lack of SOF packets. A post on a wal
 charger would read as unplugged and put itself to sleep on mains, which is the
 opposite of what "On when connected" promises. A real answer needs VBUS divided
 onto one of the expansion header's spare pins.
+
+**A missing pack is told by its restlessness, not its level.** With no pack, the
+TP4054 charges its own output capacitor, stops, and lets it sag, so GPIO9 reads like
+a full cell, around 4.1 V. A fitted cell holds still whether charging or full. So the
+post keeps the range of its averaged samples over a few seconds and calls the pack
+missing only when the reading is both high and swinging, for long enough that a burst
+of radio load on a real pack cannot pass for it; the slash follows a pulled pack by
+that hold, not at once. Single reads were tried first and
+are useless here: their ADC noise is as wide as the swing. A missing pack also means
+external power by definition, whatever the bare charger's level says to the
+threshold. The meter takes its slash, the Power page reads "no pack", and uploads
+send `batt_mv` and `batt_pct` as null. Not yet measured against a *full* pack, the
+case that matters; `power` prints the range and the verdict, so it is one line to check.
 
 `power` on the serial console is still the instrument for checking any of it:
 
