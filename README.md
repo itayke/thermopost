@@ -1059,9 +1059,17 @@ records will need, because a sleeping post has no clock to run.
 envelope sends `batt_mv`, `batt_pct` and `ext` alongside the device id and name, so
 the Sheet can answer "which posts need a visit?" without anyone walking a tank room.
 The Apps Script keeps a `posts` tab — one row per post, rewritten every batch — which
-is the surface a conditional format or a time-driven trigger alerts on; scanning a
-hundred thousand `readings` rows for each post's latest voltage is the query you do
-not want to write.
+is what its alerts read; scanning a hundred thousand `readings` rows for each post's
+latest voltage is the query you do not want to write.
+
+**The Sheet emails the fleet manager.** Out of band or a sensor fault, a battery low
+off the charger, and a post gone silent — one email when each opens, one when it
+clears, a reminder while it stays open, with thresholds and recipients in a `config`
+tab. Setup and the rules are in [`tools/cloud_apps_script.md`](tools/cloud_apps_script.md).
+Silence is the one a post cannot report itself, so every batch also carries `gap_s`,
+the longest the post means to go between uploads; the Sheet calls a post silent
+against its own cadence rather than a fixed threshold that an hourly post would trip
+all day.
 
 Three things about it are deliberate:
 
@@ -1285,6 +1293,7 @@ returns.
 | ✅ Built | the upload queue — batched POSTs to Apps Script, NVS high-water mark, host-tested JSON |
 | ✅ Built | the upload cadence — separate lit and dark floors on how often the radio comes up, bypassed by a flagged record |
 | ✅ Built | battery in the upload envelope — pack volts, percent and supply per batch, with a `posts` tab to alert from |
+| ✅ Built | manager alerts — the Apps Script emails on excursions, faults, low battery and silent posts, judged against each post's own upload gap |
 | ✅ Built | the hardware alert window — the MCP9808's own comparator tracks the band, ready for the ALERT wire |
 | ✅ Built | the ALERT line as a wake source — `ext1` beside touch on `ext0`, the wake cause logged, `power nap` to meter and prove it |
 | ✅ Built | the sleep mirror — alarm, upload deadline, record counter and supply flag kept across deep sleep, deadlines on the wall clock |

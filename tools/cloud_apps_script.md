@@ -30,13 +30,18 @@ A rename retags the queued backlog too, because records are labelled at upload
 rather than at write — which is the behaviour you want: renaming a post should
 relabel that post, not leave a seam in the middle of its history.
 
-## Two tabs, and why
+## Three tabs, and why
 
 `readings` is the history: one row per record, deduped on `device` + `index`.
 
 `posts` is the fleet's **current state**: one row per post, rewritten on every
-batch, carrying its name, when it was last heard from, its pack voltage and
-whether it is on external power. That tab exists because the alerting question —
+batch, carrying its name, when it was last heard from, its pack voltage, whether
+it is on external power, the longest it means to go between uploads (`gap_s`), and
+what its newest record says about the band (`temp`: blank, `high`, `low` or
+`fault`).
+
+`config` holds the alert settings — recipients and thresholds — as key/value rows,
+so they change without touching the script. See **4. Alerts**. That tab exists because the alerting question —
 "which posts need a visit?" — is a scan of a handful of rows there rather than of
 a hundred thousand in `readings`. A conditional-format rule or a time-driven
 trigger over `posts` is a few lines; the same thing over the history is not.
@@ -73,7 +78,8 @@ cannot tell them apart, so a useful rule is `batt_pct < 20 AND ext = FALSE`.
    characters (the device's field width).
 
 ```js
-// Bound to the destination Sheet. Appends one row per posted record.
+// Bound to the destination Sheet. Appends one row per posted record, keeps one row
+// per post in `posts`, and emails the fleet manager when a post needs attention.
 // This is the firmware's built-in default, so a fresh post syncs with only the
 // /exec URL set. Recommended: replace it with your own long random string
 // (<= 63 chars) and match it on each device — see step 4.
@@ -97,9 +103,41 @@ const HEADERS = [
 const STATUS = 'posts';
 const STATUS_HEADERS = [
   'device', 'name', 'last_seen', 'batt_mv', 'batt_pct', 'ext', 'last_index',
+  // Appended, like the readings columns, so an existing tab keeps its layout.
+  'gap_s', 'temp',
 ];
 
+// What the fleet manager tunes, in the `config` tab. Created with these defaults on
+// first use; a key added by a later version of this script is appended on its own.
+const CONFIG = 'config';
+const CONFIG_DEFAULTS = [
+  ['alert_to', '', 'comma-separated addresses; blank sends to the Sheet owner'],
+  ['batt_low_pct', 20, 'alert when the pack is below this and not on external power'],
+  ['batt_clear_pct', 25, 'clear only at or above this, so a pack on the line does not flap'],
+  ['silent_gaps', 2, 'a post is silent after this many of its own upload gaps...'],
+  ['silent_grace_min', 10, '...plus this margin'],
+  ['silent_default_min', 60, 'the silence threshold for a post that does not send its gap'],
+  ['remind_hours', 6, 'repeat an alert that is still open this often; 0 never repeats'],
+];
+
+// How often the fleet check runs. One of 1, 5, 10, 15 or 30 (Apps Script's choice).
+const CHECK_EVERY_MIN = 5;
+// How long a request waits for another to finish. Under the device's 15 s request
+// timeout, so a lost race comes back as a retry rather than a hang.
+const LOCK_WAIT_MS = 10000;
+const MS_PER_MIN = 60 * 1000;
+const MS_PER_HOUR = 60 * MS_PER_MIN;
+const SEC_PER_MIN = 60;
+const SUBJECT_PREFIX = '[Thermo Post] ';
+const STATE_PREFIX = 'alert:';
+
+const TEMP_WORDS = { high: 'above its maximum', low: 'below its minimum', fault: 'sensor fault' };
+
 function doPost(e) {
+  // One request at a time. Two posts uploading together would otherwise both read
+  // the same last row and write their batches over each other.
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_WAIT_MS)) return json_({ ok: false, error: 'busy' });
   try {
     const body = JSON.parse(e.postData.contents);
     if (body.token !== TOKEN) {
@@ -116,9 +154,12 @@ function doPost(e) {
     // device precisely so absolute indices never shift. null means the post has no
     // usable sense — no divider, or an ADC that did not answer — which is a
     // different thing from a flat pack, and blank keeps it that way in the Sheet.
-    const battMv = (body.batt_mv === null || body.batt_mv === undefined) ? '' : body.batt_mv;
-    const battPct = (body.batt_pct === null || body.batt_pct === undefined) ? '' : body.batt_pct;
+    const battMv = blankIfNull_(body.batt_mv);
+    const battPct = blankIfNull_(body.batt_pct);
     const ext = body.ext === true;
+    // The longest the post means to go between uploads. Blank from older firmware.
+    const gapS = blankIfNull_(body.gap_s);
+    const records = body.records || [];
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     let sh = ss.getSheetByName(SHEET);
@@ -147,7 +188,7 @@ function doPost(e) {
     // loop costs a round trip per row, which at 60 records a batch is the
     // difference between a second and a minute.
     const rows = [];
-    (body.records || []).forEach(function (r) {
+    records.forEach(function (r) {
       const k = device + '#' + r.index;
       if (seen[k]) return;
       seen[k] = true;
@@ -173,38 +214,246 @@ function doPost(e) {
     // Done even when every record was a duplicate: a retried batch still proves the
     // post is alive and still carries a current voltage, and a fleet view that went
     // stale because a response was lost would raise exactly the wrong alarm.
-    upsertStatus_(ss, device, name, battMv, battPct, ext, body.records || []);
+    const batch = summarize_(records);
+    const post = upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch);
+
+    // This post's alerts now, while its batch is in hand. Silence is the timed
+    // check's job, since a silent post is exactly the one that never calls this.
+    try {
+      checkPost_(config_(ss), post, batch, new Date());
+    } catch (alertErr) {
+      // A failed email (quota, a bad address) must never cost the post its upload.
+      console.error('alert check failed: ' + alertErr);
+    }
 
     return json_({ ok: true, written: rows.length });
   } catch (err) {
     return json_({ ok: false, error: String(err) });
+  } finally {
+    lock.releaseLock();
   }
 }
 
-// One row per device in the Posts tab, found by device id and rewritten in place.
-function upsertStatus_(ss, device, name, battMv, battPct, ext, records) {
+// Every post, on a timer: the only way to notice one that has stopped talking, and
+// what repeats an alert that is still open. Installed by installAlerts().
+function checkFleet() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_WAIT_MS)) return;  // the next run picks it up
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sh = ss.getSheetByName(STATUS);
+    if (!sh || sh.getLastRow() < 2) return;
+    const cfg = config_(ss);
+    const now = new Date();
+    const rows = sh.getRange(2, 1, sh.getLastRow() - 1, STATUS_HEADERS.length).getValues();
+    rows.forEach(function (row) {
+      if (row[0]) checkPost_(cfg, post_(row), null, now);
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Run once from the editor: creates the config tab, grants the mail permission,
+// installs the timed check, and sends a test message so delivery is proved now
+// rather than during the first real alert.
+function installAlerts() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const cfg = config_(ss);
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'checkFleet') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('checkFleet').timeBased().everyMinutes(CHECK_EVERY_MIN).create();
+  send_(cfg, 'alerts are on',
+        'The fleet is checked every ' + CHECK_EVERY_MIN + ' minutes. Thresholds and ' +
+        'recipients are in the "' + CONFIG + '" tab.');
+}
+
+// --- The posts tab ------------------------------------------------------------
+
+// One row per device, found by device id and rewritten in place. Returns the post as
+// the alert check reads it.
+function upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch) {
   let sh = ss.getSheetByName(STATUS);
   if (!sh) {
     sh = ss.insertSheet(STATUS);
     sh.appendRow(STATUS_HEADERS);
+  } else if (sh.getLastColumn() < STATUS_HEADERS.length) {
+    sh.getRange(1, 1, 1, STATUS_HEADERS.length).setValues([STATUS_HEADERS]);
   }
-  let lastIndex = '';
-  for (let i = 0; i < records.length; i++) {
-    if (lastIndex === '' || records[i].index > lastIndex) lastIndex = records[i].index;
-  }
-  const row = [device, name, new Date(), battMv, battPct, ext, lastIndex];
 
+  let rowNum = 0;
+  let prev = null;
   const lastRow = sh.getLastRow();
   if (lastRow > 1) {
-    const ids = sh.getRange(2, 1, lastRow - 1, 1).getValues();
-    for (let i = 0; i < ids.length; i++) {
-      if (ids[i][0] === device) {
-        sh.getRange(i + 2, 1, 1, STATUS_HEADERS.length).setValues([row]);
-        return;
-      }
+    const rows = sh.getRange(2, 1, lastRow - 1, STATUS_HEADERS.length).getValues();
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i][0] === device) { rowNum = i + 2; prev = rows[i]; break; }
     }
   }
-  sh.appendRow(row);
+  // A batch with no records keeps what the last one said about the readings.
+  const lastIndex = batch.lastIndex !== null ? batch.lastIndex : (prev ? prev[6] : '');
+  const temp = batch.latest !== null ? batch.latest : (prev ? prev[8] : '');
+  const row = [device, name, new Date(), battMv, battPct, ext, lastIndex, gapS, temp];
+
+  if (rowNum) {
+    sh.getRange(rowNum, 1, 1, STATUS_HEADERS.length).setValues([row]);
+  } else {
+    sh.appendRow(row);
+  }
+  return post_(row);
+}
+
+function post_(row) {
+  return {
+    device: row[0], name: row[1], lastSeen: row[2], battMv: row[3], battPct: row[4],
+    ext: row[5] === true, gapS: row[7], temp: row[8] || '',
+  };
+}
+
+// What a batch says about the band: how many records left it which way, how far, and
+// what the newest one says now. `latest` is null for a batch with no records.
+function summarize_(records) {
+  const s = { high: 0, low: 0, fault: 0, peak: null, trough: null, latest: null, lastIndex: null };
+  let newest = null;
+  records.forEach(function (r) {
+    if (newest === null || r.index > newest.index) newest = r;
+    if (r.high) {
+      s.high++;
+      if (r.max !== null && (s.peak === null || r.max > s.peak)) s.peak = r.max;
+    }
+    if (r.low) {
+      s.low++;
+      if (r.min !== null && (s.trough === null || r.min < s.trough)) s.trough = r.min;
+    }
+    if (r.fault) s.fault++;
+  });
+  if (newest !== null) {
+    s.latest = newest.fault ? 'fault' : newest.high ? 'high' : newest.low ? 'low' : '';
+    s.lastIndex = newest.index;
+  }
+  s.flagged = s.high + s.low + s.fault;
+  return s;
+}
+
+// --- Alerts ---------------------------------------------------------------------
+
+// Each kind of alert is a state per post: one email when it opens, one when it clears,
+// and a reminder while it stays open. Kept in script properties, out of the Sheet,
+// so nobody edits it by accident.
+function checkPost_(cfg, post, batch, now) {
+  const label = post.name || post.device;
+  const state = loadState_(post.device);
+  const details = postDetails_(cfg, post);
+
+  // Temperature: the newest record decides. A batch that left the band and came back
+  // inside one upload gets a message of its own, or it would never be heard of.
+  const tempOn = post.temp !== '';
+  if (batch && batch.flagged > 0 && !tempOn && !(state.temp && state.temp.on)) {
+    send_(cfg, label + ': left its band and came back', batchText_(batch) + details);
+  }
+  step_(cfg, state, 'temp', tempOn, TEMP_WORDS[post.temp] || '', label, 'back in band',
+        (batch ? batchText_(batch) : '') + details, now);
+
+  // Battery, with a gap between the two thresholds so a pack sitting on the line
+  // does not open and clear every batch. Blank is no sense at all, never "flat".
+  const pct = post.battPct;
+  const wasLow = state.batt && state.batt.on;
+  const battOn = pct !== '' && pct !== null && !post.ext &&
+                 pct < (wasLow ? cfg.batt_clear_pct : cfg.batt_low_pct);
+  step_(cfg, state, 'batt', battOn, 'battery low', label, 'battery recovered', details, now);
+
+  // Silence: twice the post's own longest gap plus a margin, so a post set to upload
+  // hourly is not called silent at minute forty. Any batch ends it.
+  const limitMin = post.gapS
+      ? cfg.silent_gaps * post.gapS / SEC_PER_MIN + cfg.silent_grace_min
+      : cfg.silent_default_min;
+  const silentOn = !batch && post.lastSeen instanceof Date &&
+                   now - post.lastSeen > limitMin * MS_PER_MIN;
+  step_(cfg, state, 'silent', silentOn, 'silent', label, 'reporting again', details, now);
+
+  saveState_(post.device, state);
+}
+
+// `what` names the condition and must not carry a reading: a changed `what` is a new
+// alert, which is how high turning to low is told apart from a reminder.
+function step_(cfg, state, kind, on, what, label, clearedWhat, body, now) {
+  const s = state[kind] || { on: false, what: '', sent: 0 };
+  if (on && (!s.on || s.what !== what)) {
+    send_(cfg, label + ': ' + what, body);
+    state[kind] = { on: true, what: what, sent: now.getTime() };
+  } else if (on && cfg.remind_hours > 0 &&
+             now.getTime() - s.sent >= cfg.remind_hours * MS_PER_HOUR) {
+    send_(cfg, label + ': still ' + what, body);
+    s.sent = now.getTime();
+    state[kind] = s;
+  } else if (!on && s.on) {
+    send_(cfg, label + ': ' + clearedWhat, body);
+    state[kind] = { on: false, what: '', sent: 0 };
+  }
+}
+
+function batchText_(b) {
+  const parts = [];
+  if (b.high) parts.push(b.high + ' above the maximum' + (b.peak !== null ? ', peak ' + b.peak + ' °C' : ''));
+  if (b.low) parts.push(b.low + ' below the minimum' + (b.trough !== null ? ', low ' + b.trough + ' °C' : ''));
+  if (b.fault) parts.push(b.fault + ' with no reading');
+  return parts.length ? 'In the latest upload: ' + parts.join('; ') + '.\n' : '';
+}
+
+function postDetails_(cfg, post) {
+  const batt = post.battPct === '' ? 'no battery sense'
+      : post.battPct + '% (' + post.battMv + ' mV)' + (post.ext ? ', on external power' : '');
+  return '\nLast heard from: ' + when_(cfg, post.lastSeen) +
+         '\nBattery: ' + batt +
+         '\nDevice: ' + post.device +
+         '\n\n' + cfg.url;
+}
+
+function when_(cfg, d) {
+  return d instanceof Date ? Utilities.formatDate(d, cfg.tz, 'yyyy-MM-dd HH:mm') : 'never';
+}
+
+function send_(cfg, subject, body) {
+  MailApp.sendEmail(cfg.to, SUBJECT_PREFIX + subject, body);
+}
+
+function loadState_(device) {
+  const raw = PropertiesService.getScriptProperties().getProperty(STATE_PREFIX + device);
+  return raw ? JSON.parse(raw) : {};
+}
+
+function saveState_(device, state) {
+  PropertiesService.getScriptProperties().setProperty(STATE_PREFIX + device, JSON.stringify(state));
+}
+
+// The config tab as an object, with defaults for anything blank or missing.
+function config_(ss) {
+  let sh = ss.getSheetByName(CONFIG);
+  if (!sh) {
+    sh = ss.insertSheet(CONFIG);
+    sh.appendRow(['key', 'value', 'meaning']);
+  }
+  const cfg = {};
+  const present = {};
+  const vals = sh.getDataRange().getValues();
+  CONFIG_DEFAULTS.forEach(function (d) { cfg[d[0]] = d[1]; });
+  for (let i = 1; i < vals.length; i++) {
+    const key = vals[i][0];
+    present[key] = true;
+    if (key in cfg && vals[i][1] !== '') cfg[key] = vals[i][1];
+  }
+  CONFIG_DEFAULTS.forEach(function (d) {
+    if (!present[d[0]]) sh.appendRow(d);
+  });
+  cfg.to = cfg.alert_to || Session.getEffectiveUser().getEmail();
+  cfg.tz = ss.getSpreadsheetTimeZone();
+  cfg.url = ss.getUrl();
+  return cfg;
+}
+
+function blankIfNull_(v) {
+  return (v === null || v === undefined) ? '' : v;
 }
 
 function json_(obj) {
@@ -246,8 +495,63 @@ own: it tracks a high-water mark in NVS and only uploads above it. `cloud resync
 rewinds that mark, and the `device`+`index` dedupe means any rows that survived
 will not be duplicated.
 
+## 4. Alerts
+
+The script emails the fleet manager when a post needs attention. Two paths feed it:
+
+- **Every upload** checks that post at once: its newest record's place in the band,
+  and its battery. A flagged record is uploaded urgently by the post, so an
+  excursion reaches the inbox within one upload of happening.
+- **A timed check** every few minutes walks the `posts` tab. It is the only way to
+  notice a post that has stopped talking — a silent post never calls `doPost` — and
+  it is what sends reminders for anything still open.
+
+| alert | opens when | clears when |
+|---|---|---|
+| above its maximum / below its minimum / sensor fault | the newest record is flagged | the newest record is back in band |
+| left its band and came back | an upload holds flagged records but ends in band | — one message, nothing to clear |
+| battery low | `batt_pct` below `batt_low_pct` and not on external power | at or above `batt_clear_pct`, or on external power |
+| silent | nothing heard for `silent_gaps` × the post's `gap_s`, plus `silent_grace_min` | the next upload |
+
+**One email when an alert opens, one when it clears**, and a reminder every
+`remind_hours` while it stays open. A post going from above its maximum to below
+its minimum is a new alert, not a reminder. The open/closed state lives in the
+script's properties rather than the Sheet, so nobody edits it by accident.
+
+**Silence is measured against each post's own cadence.** Every batch carries
+`gap_s`, the longest the post means to go between uploads — the longer of its two
+upload cadences, or its record interval when both are 0. A fixed threshold would
+fire all day on a post set to upload hourly. Posts on firmware too old to send it
+fall back to `silent_default_min`. A post switched off with **Turn Off** goes
+silent too, which is the honest reading — nobody can tell off from dead from out
+of range.
+
+**Battery alerts ignore posts that cannot measure themselves.** A blank `batt_pct`
+is no sense at all, not a flat pack.
+
+To turn alerts on:
+
+1. Paste the script above over the old one and **Deploy ▸ Manage deployments ▸
+   edit ▸ Version: New version**. Editing the existing deployment keeps the `/exec`
+   URL; **New deployment** would mint another, and every post would need it set.
+2. In the editor, pick **`installAlerts`** and **Run**. It asks for permission to send
+   mail as you, creates the `config` tab, installs the timed check, and sends a test
+   email — so delivery is proved now rather than during the first real alarm.
+3. Edit `config` to taste. A blank `alert_to` sends to the Sheet's owner.
+
+Run `installAlerts` again after changing `CHECK_EVERY_MIN`; it replaces the old
+trigger rather than adding a second.
+
+**Email quota.** A consumer Google account sends about 100 emails a day, a Workspace
+account about 1,500. One email per change of state keeps a fleet far under that;
+`remind_hours` is the setting that spends it.
+
 ## Notes / gotchas
 
+- **Uploads take turns.** `doPost` holds a script lock for its whole run. Two posts
+  uploading at the same moment would otherwise both read the same last row and
+  write their batches over each other. A post that waits too long gets `busy`, and
+  retries like any other failed upload.
 - **Why a token and not auth.** A Web App set to "Anyone" needs no OAuth from a
   device that has no browser, so the shared token is the access control. It is a
   soft gate: it ships in the firmware and crosses the wire in the clear. Rotate

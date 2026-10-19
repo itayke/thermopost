@@ -141,6 +141,9 @@ std::string build_payload(const Envelope& env, const RecordJson* recs, size_t n)
   out += ',';
   bool_field(out, "ext", env.external);
   out += ',';
+  key(out, "gap_s");
+  out += env.gap_s == 0 ? "null" : std::to_string(env.gap_s);
+  out += ',';
   key(out, "records");
   out += '[';
   for (size_t i = 0; i < n; ++i) {

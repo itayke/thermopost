@@ -80,6 +80,7 @@ constexpr size_t kBatchSize = 60;
 // that will eventually be asleep between records — there is no clock to run.
 constexpr int64_t kUsPerMs  = 1000;
 constexpr int64_t kMsPerMin = 60'000;
+constexpr uint32_t kSecPerMin = 60;
 
 constexpr uint32_t   kSyncTaskStack = 12288;  // the mbedTLS handshake needs the headroom
 constexpr UBaseType_t kSyncTaskPrio = 3;      // same as the sampler
@@ -500,7 +501,13 @@ BatchResult upload_batch() {
   // The name is read fresh every batch rather than cached, which is what makes a
   // rename retag the queued backlog. That is the intended behaviour: renaming a
   // post should relabel that post, not leave a seam in the middle of its history.
-  env.name = settings::get().name;
+  const settings::Settings cfg = settings::get();
+  env.name = cfg.name;
+  // The longer of the two cadences, since a post can sit at either; a cadence of 0
+  // sends every record, so the record interval bounds it from below.
+  env.gap_s = std::max({static_cast<uint32_t>(cfg.upload_every_min) * kSecPerMin,
+                        static_cast<uint32_t>(cfg.upload_dark_min) * kSecPerMin,
+                        static_cast<uint32_t>(cfg.interval_s)});
 
   // Read now, not when the records were written: this describes the post sending
   // the batch, not the intervals inside it. A backlog drained after a night offline

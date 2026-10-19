@@ -135,13 +135,13 @@ TEST_CASE("an unset clock omits epoch rather than sending zero", "[json][record]
 
 TEST_CASE("the envelope carries token, device and name around the records",
           "[json][payload]") {
-  const Envelope env{"tok", "a1b2c3d4e5f6", "North Tank", 3812, 62, false};
+  const Envelope env{"tok", "a1b2c3d4e5f6", "North Tank", 3812, 62, false, 900};
   const RecordJson recs[] = {plain(), plain()};
   const std::string s = build_payload(env, recs, 2);
 
   CHECK(s.rfind("{\"token\":\"tok\",\"device\":\"a1b2c3d4e5f6\","
                 "\"name\":\"North Tank\",\"batt_mv\":3812,\"batt_pct\":62,"
-                "\"ext\":false,\"records\":[{", 0) == 0);
+                "\"ext\":false,\"gap_s\":900,\"records\":[{", 0) == 0);
   CHECK(s.substr(s.size() - 3) == "}]}");
   // Two records, one comma between them.
   CHECK(s.find("},{") != std::string::npos);
@@ -151,7 +151,7 @@ TEST_CASE("an empty batch still produces valid JSON", "[json][payload]") {
   const Envelope env{"tok", "dev", "post", 4102, 91, true};
   CHECK(build_payload(env, nullptr, 0) ==
         "{\"token\":\"tok\",\"device\":\"dev\",\"name\":\"post\","
-        "\"batt_mv\":4102,\"batt_pct\":91,\"ext\":true,\"records\":[]}");
+        "\"batt_mv\":4102,\"batt_pct\":91,\"ext\":true,\"gap_s\":null,\"records\":[]}");
 }
 
 TEST_CASE("a post with no usable battery reading sends null, not a sentinel",
@@ -175,6 +175,14 @@ TEST_CASE("a flat pack still reports its percentage as zero, not as absent",
   const Envelope env{"tok", "dev", "post", 3300, 0, false};
   const std::string s = build_payload(env, nullptr, 0);
   CHECK(s.find("\"batt_mv\":3300,\"batt_pct\":0,\"ext\":false") != std::string::npos);
+}
+
+TEST_CASE("an unknown upload gap is null, so the Sheet falls back to its default",
+          "[json][payload]") {
+  // Zero would read as "never goes quiet", and a post that says so is one whose
+  // silence nothing would ever flag.
+  const Envelope env{"tok", "dev", "post"};
+  CHECK(build_payload(env, nullptr, 0).find("\"gap_s\":null") != std::string::npos);
 }
 
 TEST_CASE("a name with a quote in it cannot break out of the envelope",

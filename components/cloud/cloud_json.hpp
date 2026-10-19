@@ -75,6 +75,10 @@ struct Envelope {
   // 3.6 V and charging is recovering, a post at 3.6 V and discharging needs a
   // visit, and the voltage alone cannot tell them apart.
   bool        external = true;
+  // The longest this post means to go between uploads, in seconds; 0 when unknown,
+  // sent as null. What lets the Sheet call a post silent without knowing its
+  // cadence settings: a fixed threshold would fire all day on a post set to an hour.
+  uint32_t    gap_s = 0;
 };
 
 // Escape a string's contents for embedding between JSON double quotes (does NOT
@@ -98,7 +102,7 @@ void append_record(std::string& out, const RecordJson& r);
 
 // Build the full request body:
 //   {"token":"…","device":"…","name":"…","batt_mv":…,"batt_pct":…,"ext":…,
-//    "records":[ {…}, … ]}
+//    "gap_s":…,"records":[ {…}, … ]}
 std::string build_payload(const Envelope& env, const RecordJson* recs, size_t n);
 
 }  // namespace thermopost::cloud::json
