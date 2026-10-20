@@ -356,23 +356,6 @@ function checkPost_(cfg, post, batch, now) {
   const state = loadState_(post.device);
   const details = postDetails_(cfg, post);
 
-  // Temperature: the newest record decides. A batch that left the band and came back
-  // inside one upload gets a message of its own, or it would never be heard of.
-  const tempOn = post.temp !== '';
-  if (batch && batch.flagged > 0 && !tempOn && !(state.temp && state.temp.on)) {
-    send_(cfg, label + ': left its band and came back', batchText_(batch) + details);
-  }
-  step_(cfg, state, 'temp', tempOn, TEMP_WORDS[post.temp] || '', label, 'back in band',
-        (batch ? batchText_(batch) : '') + details, now);
-
-  // Battery, with a gap between the two thresholds so a pack sitting on the line
-  // does not open and clear every batch. Blank is no sense at all, never "flat".
-  const pct = post.battPct;
-  const wasLow = state.batt && state.batt.on;
-  const battOn = pct !== '' && pct !== null && !post.ext &&
-                 pct < (wasLow ? cfg.batt_clear_pct : cfg.batt_low_pct);
-  step_(cfg, state, 'batt', battOn, 'battery low', label, 'battery recovered', details, now);
-
   // Silence: twice the post's own longest gap plus a margin, so a post set to upload
   // hourly is not called silent at minute forty. Any batch ends it.
   const limitMin = post.gapS
@@ -380,19 +363,42 @@ function checkPost_(cfg, post, batch, now) {
       : cfg.silent_default_min;
   const silentOn = !batch && post.lastSeen instanceof Date &&
                    now - post.lastSeen > limitMin * MS_PER_MIN;
-  step_(cfg, state, 'silent', silentOn, 'silent', label, 'reporting again', details, now);
+  // First, so a post coming back says so before anything its batch reminds of.
+  step_(cfg, state, 'silent', silentOn, 'silent', label, 'reporting again', details, now, true);
+  // A silent post's readings are stale, so only the silence is repeated. Its other
+  // alerts stay open, and its first batch back reminds or clears them afresh.
+  const remind = !silentOn;
+
+  // Temperature: the newest record decides. A batch that left the band and came back
+  // inside one upload gets a message of its own, or it would never be heard of.
+  const tempOn = post.temp !== '';
+  if (batch && batch.flagged > 0 && !tempOn && !(state.temp && state.temp.on)) {
+    send_(cfg, label + ': left its band and came back', batchText_(batch) + details);
+  }
+  step_(cfg, state, 'temp', tempOn, TEMP_WORDS[post.temp] || '', label, 'back in band',
+        (batch ? batchText_(batch) : '') + details, now, remind);
+
+  // Battery, with a gap between the two thresholds so a pack sitting on the line
+  // does not open and clear every batch. Blank is no sense at all, never "flat".
+  const pct = post.battPct;
+  const wasLow = state.batt && state.batt.on;
+  const battOn = pct !== '' && pct !== null && !post.ext &&
+                 pct < (wasLow ? cfg.batt_clear_pct : cfg.batt_low_pct);
+  step_(cfg, state, 'batt', battOn, 'battery low', label, 'battery recovered', details, now,
+        remind);
 
   saveState_(post.device, state);
 }
 
 // `what` names the condition and must not carry a reading: a changed `what` is a new
-// alert, which is how high turning to low is told apart from a reminder.
-function step_(cfg, state, kind, on, what, label, clearedWhat, body, now) {
+// alert, which is how high turning to low is told apart from a reminder. `remind`
+// false holds a reminder back without closing the alert.
+function step_(cfg, state, kind, on, what, label, clearedWhat, body, now, remind) {
   const s = state[kind] || { on: false, what: '', sent: 0 };
   if (on && (!s.on || s.what !== what)) {
     send_(cfg, label + ': ' + what, body);
     state[kind] = { on: true, what: what, sent: now.getTime() };
-  } else if (on && cfg.remind_hours > 0 &&
+  } else if (on && remind && cfg.remind_hours > 0 &&
              now.getTime() - s.sent >= cfg.remind_hours * MS_PER_HOUR) {
     send_(cfg, label + ': still ' + what, body);
     s.sent = now.getTime();
@@ -525,7 +531,9 @@ The script emails the fleet manager when a post needs attention. Two paths feed 
 | silent | nothing heard for `silent_gaps` × the post's `gap_s`, plus `silent_grace_min` | the next upload |
 
 **One email when an alert opens, one when it clears**, and a reminder every
-`remind_hours` while it stays open. A post going from above its maximum to below
+`remind_hours` while it stays open. While a post is silent only the silence is
+repeated: its last reading is stale, so its other alerts stay open but quiet, and its
+first upload back either reminds or clears them. A post going from above its maximum to below
 its minimum is a new alert, not a reminder. The open/closed state lives in the
 script's properties rather than the Sheet, so nobody edits it by accident.
 
