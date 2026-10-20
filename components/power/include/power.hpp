@@ -61,6 +61,9 @@ struct Battery {
   // A pack is there to report on: the ADC answered, the divider is known, and the
   // reading is not a bare charger's. The one field the meter and the upload check.
   bool fitted;
+  // `fitted` has had the time it needs after boot to see a bare charger. Before that
+  // the meter shows a pack optimistically; the upload sends nothing rather than guess.
+  bool settled;
 };
 Battery battery();
 

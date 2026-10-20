@@ -651,7 +651,9 @@ that hold, not at once. Single reads were tried first and
 are useless here: their ADC noise is as wide as the swing. A missing pack also means
 external power by definition, whatever the bare charger's level says to the
 threshold. The meter takes its slash, the Power page reads "no pack", and uploads
-send `batt_mv` and `batt_pct` as null. Not yet measured against a *full* pack, the
+send `batt_mv` and `batt_pct` as null. So does an upload in the first seconds after
+boot, before the verdict has had its window and hold: the meter can show a pack
+optimistically for that long, but the Sheet should not record one that may not exist. Not yet measured against a *full* pack, the
 case that matters; `power` prints the range and the verdict, so it is one line to check.
 
 `power` on the serial console is still the instrument for checking any of it:

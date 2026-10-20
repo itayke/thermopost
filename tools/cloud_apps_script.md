@@ -129,6 +129,9 @@ const MS_PER_MIN = 60 * 1000;
 const MS_PER_HOUR = 60 * MS_PER_MIN;
 const SEC_PER_MIN = 60;
 const SUBJECT_PREFIX = '[Thermopost] ';
+// Presentation only, the stored value is the full timestamp. Set on the whole column:
+// a Date written by setValues() can land shown as a bare date, hiding the time of day.
+const DATETIME_FORMAT = 'yyyy-mm-dd hh:mm:ss';
 const STATE_PREFIX = 'alert:';
 
 const TEMP_WORDS = { high: 'above its maximum', low: 'below its minimum', fault: 'sensor fault' };
@@ -209,6 +212,7 @@ function doPost(e) {
 
     if (rows.length) {
       sh.getRange(sh.getLastRow() + 1, 1, rows.length, HEADERS.length).setValues(rows);
+      showTimes_(sh, HEADERS.indexOf('datetime') + 1);
     }
 
     // Done even when every record was a duplicate: a retried batch still proves the
@@ -301,7 +305,13 @@ function upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch) {
   } else {
     sh.appendRow(row);
   }
+  showTimes_(sh, STATUS_HEADERS.indexOf('last_seen') + 1);
   return post_(row);
+}
+
+// Show a timestamp column with its time of day, existing rows included.
+function showTimes_(sh, col) {
+  sh.getRange(2, col, sh.getMaxRows() - 1, 1).setNumberFormat(DATETIME_FORMAT);
 }
 
 function post_(row) {

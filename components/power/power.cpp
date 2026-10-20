@@ -127,6 +127,8 @@ static_assert(kFittedRangeMv < kBareRangeMv, "the pack-fitted thresholds are inv
 constexpr int kBareFloorMv = 4000;
 // The swing has to last, so a burst of radio load on a real pack cannot pass for one.
 constexpr uint32_t kBareHoldMs = 10'000;
+// How long after boot the verdict can be trusted: the window filled, then the hold.
+constexpr uint32_t kFittedSettleMs = kRangeWindowMs + kBareHoldMs;
 
 // The other half of the answer, and the better half when it applies.
 //
@@ -401,6 +403,7 @@ void sample_battery(Battery* out) {
   out->pct = 0;
   out->range_mv = 0;
   out->fitted = false;
+  out->settled = false;
 
   if (s_adc == nullptr) return;
 
@@ -467,6 +470,8 @@ void task(void*) {
   bool s_last_logged_external = !s_external;  // force the first state to be logged
   RangeWindow window;
   uint32_t bare_for_ms = 0;
+  // A verdict carried across deep sleep is already settled; a fresh one has to be earned.
+  uint32_t judged_ms = sleepstate::resumed() ? kFittedSettleMs : 0;
   bool logged_fitted = s_fitted;
   apply(applied);
 
@@ -495,6 +500,8 @@ void task(void*) {
 
     const bool fitted = fitted_from(s_fitted, b, &bare_for_ms);
     if (b.present && b.calibrated) b.fitted = fitted;
+    if (judged_ms < kFittedSettleMs) judged_ms += kTickMs;
+    b.settled = judged_ms >= kFittedSettleMs;
     // A post running with no pack is on external power by definition, whatever the
     // bare charger's level says to the threshold.
     const bool external =
@@ -597,6 +604,7 @@ int cmd_power(int argc, char** argv) {
     std::printf("pack      %d mV, ranging %d mV over the last %" PRIu32 " s, %s\n",
                 b.pack_mv, b.range_mv, kRangeWindowMs / kMsPerSec,
                 b.fitted ? "fitted" : "not fitted (a bare charger)");
+    if (!b.settled) std::printf("          still deciding whether a pack is fitted\n");
   } else {
     std::printf("pack      uncalibrated — set kDividerPerMille in power.cpp from a\n"
                 "          meter on the pack terminals against the pin mV above,\n"
@@ -727,6 +735,7 @@ esp_err_t begin_quiet() {
   s_tier = Tier::Asleep;
   // Too brief a wake to see the range, so the pack keeps the verdict it slept with.
   if (b.fitted) b.fitted = s_fitted;
+  b.settled = sleepstate::resumed();
   s_battery = b;
   if (!s_ever_saw_host) s_external = external_from_pack(s_external, b) || !s_fitted;
   return ESP_OK;
