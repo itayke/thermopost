@@ -95,17 +95,13 @@ constexpr uint16_t kUploadDarkDefaultMin  = 15;
 // safe on flash either way.
 constexpr uint16_t kUploadEveryMaxMin = 1440;
 
-// A deliberately tight band straddling room temperature, so both directions are
-// reachable on a desk: cup the sensor in a hand to breach the maximum, and a cold
-// drink or a puff of canned air breaches the minimum. That makes the alarm path,
-// the record flags and the graph's envelope all testable in seconds rather than
-// needing a tank.
+// A generic band a fresh post can be deployed on, wide enough that a normal room never
+// alarms. A fleet sets its real band from the Sheet; see set_band_from_sheet().
 //
-// It follows that a device left on a normal desk will alarm — that is the point of
-// these numbers, not an oversight. Expected to be the first thing changed for real
-// use, and a wider 15..30 is the sane generic band to go back to.
-constexpr int16_t kMinDefaultC100 = 2000;  // 20.00 °C
-constexpr int16_t kMaxDefaultC100 = 2500;  // 25.00 °C
+// For a bench test of the alarm path, narrow it around room temperature from the menu,
+// so a hand on the sensor breaches the maximum and canned air the minimum.
+constexpr int16_t kMinDefaultC100 = 1500;  // 15.00 °C
+constexpr int16_t kMaxDefaultC100 = 3000;  // 30.00 °C
 constexpr int16_t kHysteresisDefaultC100 = 50;  // 0.50 °C
 
 // The narrowest band the Sheet may set: no narrower than the menu's own steppers allow

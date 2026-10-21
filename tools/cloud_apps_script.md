@@ -140,7 +140,9 @@ const CONFIG_DEFAULTS = [
   ['fw_target', '', 'the release every post should run, a version from the firmware tab; blank updates nothing'],
   ['band_min_c', '', 'every post alarms below this, in °C, unless its posts row says otherwise; blank leaves it to the post'],
   ['band_max_c', '', 'every post alarms above this, in °C, unless its posts row says otherwise; blank leaves it to the post'],
+  ['archive_after_days', 30, 'readings older than this move nightly to a spreadsheet per month beside this one; 0 keeps them all here'],
 ];
+const CONFIG_HEADERS = ['key', 'value', 'meaning'];
 
 // How often the fleet check runs. One of 1, 5, 10, 15 or 30 (Apps Script's choice).
 const CHECK_EVERY_MIN = 5;
@@ -149,12 +151,27 @@ const CHECK_EVERY_MIN = 5;
 const LOCK_WAIT_MS = 10000;
 const MS_PER_MIN = 60 * 1000;
 const MS_PER_HOUR = 60 * MS_PER_MIN;
+const MS_PER_DAY = 24 * MS_PER_HOUR;
 const SEC_PER_MIN = 60;
 const SUBJECT_PREFIX = '[Thermopost] ';
 // Presentation only, the stored value is the full timestamp. Set on the whole column:
 // a Date written by setValues() can land shown as a bare date, hiding the time of day.
 const DATETIME_FORMAT = 'yyyy-mm-dd hh:mm:ss';
 const STATE_PREFIX = 'alert:';
+
+// The archive: the hour it runs, in the script's time zone, and how many rows one run
+// moves, so a first run on a long history stays inside Apps Script's time limit.
+const ARCHIVE_HOUR = 3;
+const ARCHIVE_ROWS_PER_RUN = 50000;
+// Google's limit on cells in one spreadsheet. An archive file starts a new part before
+// it, with room to spare.
+const SHEETS_CELL_LIMIT = 10000000;
+const ARCHIVE_FILL = 0.9;
+const ARCHIVE_MAX_ROWS = Math.floor(SHEETS_CELL_LIMIT * ARCHIVE_FILL / HEADERS.length);
+// The highest index archived per post, so a resent record is not written back here.
+const ARCHIVED_PREFIX = 'archived:';
+const EPOCH_COL = HEADERS.indexOf('epoch');
+const INDEX_COL = HEADERS.indexOf('index');
 
 const TEMP_WORDS = { high: 'above its maximum', low: 'below its minimum', fault: 'sensor fault' };
 
@@ -194,19 +211,21 @@ function doPost(e) {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     let sh = ss.getSheetByName(SHEET);
     if (!sh) {
-      sh = ss.insertSheet(SHEET);
-      sh.appendRow(HEADERS);
+      sh = newTab_(ss, SHEET, HEADERS);
     } else if (sh.getLastColumn() < HEADERS.length) {
       // A Sheet created before the battery columns existed. Widening the header row
       // is the whole migration — old rows simply have those cells blank, which is
       // the honest reading of "this post never reported it".
-      sh.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
+      widen_(sh, HEADERS);
     }
 
     // Existing device+index pairs, for an idempotent write. Only the two key
     // columns are read, not the whole sheet.
     const lastRow = sh.getLastRow();
     const seen = {};
+    // Anything at or below this has been archived, and a resent copy stays out.
+    const archived = Number(PropertiesService.getScriptProperties()
+        .getProperty(ARCHIVED_PREFIX + device) || -1);
     if (lastRow > 1) {
       const keys = sh.getRange(2, 1, lastRow - 1, 3).getValues();
       for (let i = 0; i < keys.length; i++) {
@@ -220,7 +239,7 @@ function doPost(e) {
     const rows = [];
     records.forEach(function (r) {
       const k = device + '#' + r.index;
-      if (seen[k]) return;
+      if (seen[k] || r.index <= archived) return;
       seen[k] = true;
       // A real Date, not a string, so it sorts and charts natively; the sheet
       // renders it in its own timezone. Blank when the record predates the first
@@ -314,6 +333,141 @@ function installAlerts() {
         'recipients are in the "' + CONFIG + '" tab.');
 }
 
+// Run once from the editor: installs the nightly archive and runs it now. It asks for
+// Drive access, because the archive files go beside this spreadsheet.
+function installArchive() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'archiveReadings') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('archiveReadings').timeBased().everyDays(1).atHour(ARCHIVE_HOUR).create();
+  archiveReadings();
+}
+
+// --- The archive --------------------------------------------------------------
+
+// Nightly: moves readings older than archive_after_days into one spreadsheet per month,
+// beside this one in Drive, so the readings tab stays quick to dedupe against and far
+// from the cell limit. Also trims every tab to its own columns.
+function archiveReadings() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_WAIT_MS)) return;  // the next night picks it up
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const cfg = config_(ss);
+    [[SHEET, HEADERS], [STATUS, STATUS_HEADERS], [CONFIG, CONFIG_HEADERS],
+     [FIRMWARE, FIRMWARE_HEADERS]].forEach(function (t) {
+      const tab = ss.getSheetByName(t[0]);
+      if (tab) trimColumns_(tab, t[1].length);
+    });
+    const days = Number(cfg.archive_after_days);
+    const sh = ss.getSheetByName(SHEET);
+    if (!(days > 0) || !sh || sh.getLastRow() < 2) return;
+
+    // The leading run of rows older than the cutoff. Rows arrive in upload order, so a
+    // late backlog waits for the rows ahead of it rather than splitting the tab, and a
+    // row from before its post had the time goes with the rows around it.
+    const cutoffS = (Date.now() - days * MS_PER_DAY) / 1000;
+    const count = Math.min(sh.getLastRow() - 1, ARCHIVE_ROWS_PER_RUN);
+    const epochs = sh.getRange(2, EPOCH_COL + 1, count, 1).getValues();
+    let n = 0;
+    while (n < epochs.length && (epochs[n][0] === '' || epochs[n][0] < cutoffS)) n++;
+    if (!n) return;
+    const rows = sh.getRange(2, 1, n, HEADERS.length).getValues();
+
+    // By month of the reading; a row without a time takes the month of the row before
+    // it, or of the first row with one.
+    const monthOf = function (r) {
+      return Utilities.formatDate(new Date(r[EPOCH_COL] * 1000), cfg.tz, 'yyyy-MM');
+    };
+    const months = {};
+    const highest = {};
+    const firstDated = rows.find(function (r) { return r[EPOCH_COL] !== ''; });
+    let month = firstDated ? monthOf(firstDated) : Utilities.formatDate(new Date(), cfg.tz, 'yyyy-MM');
+    rows.forEach(function (r) {
+      if (r[EPOCH_COL] !== '') month = monthOf(r);
+      (months[month] = months[month] || []).push(r);
+      highest[r[0]] = Math.max(highest[r[0]] === undefined ? -1 : highest[r[0]], r[INDEX_COL]);
+    });
+    const folder = folder_(ss);
+    Object.keys(months).forEach(function (m) {
+      appendArchive_(folder, ss.getName() + ' archive ' + m, months[m]);
+    });
+
+    // Written before the rows go, so a run cut short leaves a duplicate, never a gap.
+    const props = PropertiesService.getScriptProperties();
+    Object.keys(highest).forEach(function (device) {
+      const prev = Number(props.getProperty(ARCHIVED_PREFIX + device) || -1);
+      props.setProperty(ARCHIVED_PREFIX + device, String(Math.max(prev, highest[device])));
+    });
+    sh.deleteRows(2, n);
+    console.log('archived ' + n + ' readings');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Append rows to a month's archive, starting another part when one fills.
+function appendArchive_(folder, name, rows) {
+  let i = 0;
+  for (let part = 1; i < rows.length; part++) {
+    const sh = archiveTab_(folder, part > 1 ? name + ' part ' + part : name);
+    const room = ARCHIVE_MAX_ROWS - (sh.getLastRow() - 1);
+    if (room <= 0) continue;
+    const chunk = rows.slice(i, i + room);
+    sh.getRange(sh.getLastRow() + 1, 1, chunk.length, HEADERS.length).setValues(chunk);
+    showTimes_(sh, HEADERS.indexOf('datetime') + 1);
+    i += chunk.length;
+  }
+}
+
+// The readings tab of the archive file with this name, created beside this spreadsheet.
+function archiveTab_(folder, name) {
+  const files = folder.getFilesByName(name);
+  if (files.hasNext()) {
+    const sh = SpreadsheetApp.open(files.next()).getSheets()[0];
+    if (sh.getLastColumn() < HEADERS.length) widen_(sh, HEADERS);
+    return sh;
+  }
+  const file = SpreadsheetApp.create(name);
+  DriveApp.getFileById(file.getId()).moveTo(folder);
+  const sh = file.getSheets()[0];
+  sh.setName(SHEET);
+  sh.appendRow(HEADERS);
+  trimColumns_(sh, HEADERS.length);
+  return sh;
+}
+
+// The Drive folder this spreadsheet sits in.
+function folder_(ss) {
+  const parents = DriveApp.getFileById(ss.getId()).getParents();
+  return parents.hasNext() ? parents.next() : DriveApp.getRootFolder();
+}
+
+// --- Tabs -----------------------------------------------------------------------
+
+// A tab with its header row and no columns beyond it.
+function newTab_(ss, name, headers) {
+  const sh = ss.insertSheet(name);
+  sh.appendRow(headers);
+  trimColumns_(sh, headers.length);
+  return sh;
+}
+
+// Drop the empty columns past a tab's own, keeping any a person added with content.
+function trimColumns_(sh, n) {
+  const keep = Math.max(n, sh.getLastColumn());
+  const max = sh.getMaxColumns();
+  if (max > keep) sh.deleteColumns(keep + 1, max - keep);
+}
+
+// Widen a tab's header row to a newer version of the script's, adding columns if the
+// tab was trimmed.
+function widen_(sh, headers) {
+  const missing = headers.length - sh.getMaxColumns();
+  if (missing > 0) sh.insertColumnsAfter(sh.getMaxColumns(), missing);
+  sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+}
+
 // --- The posts tab ------------------------------------------------------------
 
 // One row per device, found by device id and rewritten in place. Returns the post as
@@ -322,10 +476,9 @@ function upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch, firm
                        band) {
   let sh = ss.getSheetByName(STATUS);
   if (!sh) {
-    sh = ss.insertSheet(STATUS);
-    sh.appendRow(STATUS_HEADERS);
+    sh = newTab_(ss, STATUS, STATUS_HEADERS);
   } else if (sh.getLastColumn() < STATUS_HEADERS.length) {
-    sh.getRange(1, 1, 1, STATUS_HEADERS.length).setValues([STATUS_HEADERS]);
+    widen_(sh, STATUS_HEADERS);
   }
 
   let rowNum = 0;
@@ -425,8 +578,7 @@ function firmwareFor_(ss, cfg, post) {
 function releases_(ss) {
   let sh = ss.getSheetByName(FIRMWARE);
   if (!sh) {
-    sh = ss.insertSheet(FIRMWARE);
-    sh.appendRow(FIRMWARE_HEADERS);
+    sh = newTab_(ss, FIRMWARE, FIRMWARE_HEADERS);
     // Text, so a version that looks like a number keeps its exact spelling.
     sh.getRange('A:A').setNumberFormat('@');
   }
@@ -567,8 +719,7 @@ function saveState_(device, state) {
 function config_(ss) {
   let sh = ss.getSheetByName(CONFIG);
   if (!sh) {
-    sh = ss.insertSheet(CONFIG);
-    sh.appendRow(['key', 'value', 'meaning']);
+    sh = newTab_(ss, CONFIG, CONFIG_HEADERS);
   }
   const cfg = {};
   const present = {};
@@ -741,6 +892,33 @@ The `band` column changes one upload after the band does, because each upload re
 the band in force when it was sent. The email alerts follow the post's own flags, so
 they move with the band without any change here.
 
+## 7. The archive
+
+`readings` keeps the last `archive_after_days` (30 by default). Every night the script
+moves older rows into one spreadsheet per month, named after this one (`… archive
+2026-10`) and kept in the same Drive folder. A month that would come close to Google's
+limit of ten million cells per spreadsheet continues in `… archive 2026-10 part 2`.
+
+This keeps the Sheet working: every upload reads the key columns of every row in
+`readings`, and a fleet recording each minute would otherwise reach the cell limit in
+weeks. Once that happens, appends fail and the emails stop.
+
+To turn it on, paste the script and deploy a new version as in **4. Alerts**, then
+pick **`installArchive`** in the editor and **Run**. It asks for access to Drive, where
+the archive files go, installs the nightly run, and runs it once now.
+
+- **Rows leave in the order they arrived.** A run moves the leading rows older than
+  the cutoff and stops at the first newer one. So a post's late backlog waits until the
+  rows ahead of it have aged out too.
+- **An archived record is never written back.** The script remembers the highest
+  index it has archived for each post, so a `cloud resync` doesn't add old rows to
+  `readings` again.
+- **Each run moves a limited number of rows**, so the first run on a long history
+  finishes over a few nights.
+- **The run also trims every tab to its own columns.** It removes only the empty
+  columns to the right; a column you added with something in it stays.
+- **`archive_after_days` set to `0`** keeps everything in `readings`.
+
 ## Notes / gotchas
 
 - **Uploads take turns.** `doPost` holds a script lock for its whole run. Two posts
@@ -766,8 +944,8 @@ they move with the band without any change here.
   sentinel, so the cell is genuinely empty and a chart skips it instead of
   plotting -327.68 °C.
 - **Dedupe cost grows with the sheet.** Every POST reads the three key columns of
-  every existing row. That is fine into the hundreds of thousands of rows and
-  then is not; archive to a second sheet when it gets there.
+  every row in `readings`, which is what the archive keeps short; see **7. The
+  archive**.
 - **Quotas.** Apps Script has daily runtime limits and a real cold-start latency
   — the device allows 15 s per request and batches up to 60 records per POST,
   which is an hour of history at the default one-minute cadence.

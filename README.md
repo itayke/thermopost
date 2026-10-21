@@ -1143,6 +1143,12 @@ The Apps Script keeps a `posts` tab — one row per post, rewritten every batch 
 is what its alerts read; scanning a hundred thousand `readings` rows for each post's
 latest voltage is the query you do not want to write.
 
+**`readings` holds the last month, and older rows move to an archive.** Each night the
+Apps Script moves readings older than `archive_after_days` into one spreadsheet per
+month in the same Drive folder. A fleet recording every minute would otherwise fill a
+spreadsheet's ten million cells in weeks, and every upload's duplicate check reads the
+whole tab. See **7. The archive** in the guide.
+
 **The Sheet emails the fleet manager.** Out of band or a sensor fault, a battery low
 off the charger, and a post gone silent — one email when each opens, one when it
 clears, a reminder while it stays open, with thresholds and recipients in a `config`
@@ -1388,6 +1394,7 @@ returns.
 | ✅ Built | the quiet wake — a timer wake records, judges the alarm and uploads on the dark cadence without lighting the screen, coming up fully only for an alarm or a charger |
 | ✅ Built | the OTA layout — two app slots, a rollback bootloader, and log numbering that never falls below the upload mark |
 | ✅ Verified | over-the-air updates — by hand from the console, then from a post's `fw_pin`, a downgrade through the Sheet, and a fleet rollout from `fw_target`, each new image kept only once it uploaded. A rejected hash and a deadline rollback are built but not yet exercised |
+| ✅ Built | the nightly archive — readings past `archive_after_days` move to a spreadsheet per month, and every tab is trimmed to its own columns |
 | ✅ Built | the band from the Sheet — `config` for the fleet, a `posts` row for one post, locked on the Temperature page while set |
 | 🟨 Gated | sleeping on idle — the ladder's fourth rung, behind `kAutoSleepReady` until the quiet wake has run on the bench and the sleep current is metered |
 
@@ -1420,18 +1427,9 @@ sampling cadence and M9's RTC-memory mirror an obvious place to attach.
   its idle current continuously and M9's power measurements have to include it —
   `board_pins.hpp` currently claims the line is held inactive between alarms, which
   may be wishful.
-- **Default alarm band.** Currently **20–25 °C**, deliberately tight around room
-  temperature so both directions are reachable on a desk — cup the sensor to breach
-  the maximum, a cold drink or canned air to breach the minimum. That makes the
-  alarm path, the record flags and the graph's envelope testable in seconds instead
-  of needing a tank. It follows that a device sitting on a desk will alarm, which is
-  the intent of these numbers rather than a bug — though now that the alarm is wired
-  it also *beeps* on a desk, so a bench session generally starts with either Off or
-  the Sound page's mute. 15–30 °C is the sane generic band to go back to once the
-  alarms are proven.
 - **Time zone.** The displayed clock renders in a compile-time POSIX zone string in
   [`ui_chrome.cpp`](components/ui/ui_chrome.cpp) — currently espressopost's, since
-  the two share a bench. It belongs in `settings`, delivered the way every other
-  tunable will be once config rides the upload response; until then relocating a post
-  is a one-string change. Nothing stored is affected either way: every record carries
+  the two share a bench. It belongs in `settings`, sent on the upload reply the way the
+  band is, from the Sheet's own time zone; until then relocating a post is a
+  one-string change. Nothing stored is affected either way: every record carries
   UTC.
