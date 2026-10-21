@@ -216,7 +216,7 @@ tools/release.sh "what changed"
 It refuses a dirty tree, an unpushed commit or a version already released, builds into
 `build-release/`, publishes `thermopost-<version>.bin` as a GitHub release of this repo
 tagged at the commit it was built from (`$THERMOPOST_RELEASES_REPO` names another), and
-prints the row to paste into the Sheet's `firmware` tab. The repo has to be public: a
+puts the row for the Sheet's `firmware` tab on the clipboard, ready to paste. The repo has to be public: a
 post downloads the release without credentials.
 
 **Rolling out** is two cells, both read on every upload, so nothing is redeployed:

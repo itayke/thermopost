@@ -49,6 +49,16 @@ gh release create "$TAG" "$BIN" --repo "$REPO" --title "$TAG" --target "$COMMIT"
     --notes "${NOTES:-Thermopost $VERSION}"
 
 URL="https://github.com/$REPO/releases/download/$TAG/thermopost-$VERSION.bin"
+ROW_NOTES="${NOTES:-${COMMIT:0:7}}"
 echo
-echo "Paste into the firmware tab (version, url, sha256, notes):"
-printf '%s\t%s\t%s\t%s\n' "$VERSION" "$URL" "$SHA" "${NOTES:-${COMMIT:0:7}}"
+echo "version  $VERSION"
+echo "url      $URL"
+echo "sha256   $SHA"
+echo "notes    $ROW_NOTES"
+# Tabs survive the clipboard but not a terminal copy, and Sheets splits a pasted
+# tab-separated line across columns.
+if command -v pbcopy >/dev/null; then
+    printf '%s\t%s\t%s\t%s' "$VERSION" "$URL" "$SHA" "$ROW_NOTES" | pbcopy
+    echo
+    echo "The row is on the clipboard: paste it into the firmware tab's first empty row."
+fi
