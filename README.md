@@ -797,7 +797,7 @@ rather than sitting flush left with a hole beside it.
 
 | page | controls | footer says |
 |---|---|---|
-| Temperature | alarm below, alarm above, recovery margin, **unit** | the exact stored hundredths |
+| Temperature | alarm below, alarm above, recovery margin, **unit** | the exact stored hundredths, or which bounds the Sheet sets |
 | Recording | interval, points plotted, **upload every**, **when dark** | the graph's span, and how stale the Sheet may get |
 | Sound | alarm sound on/off, volume, **test alarm** | whether alarms will be audible |
 | Power | mode, sleep delay, **battery volts** | what this mode actually does, or that sleep is not armed |
@@ -823,9 +823,10 @@ screen as a number the alarm logic has stopped using.
 
 **Thresholds step in tenths of a degree, and that is a consequence of the form's
 scope, not a preference.** The web form carries the network and the post's identity
-and nothing else, so the menu is the *only* way to set a threshold — and a resolution
-the menu cannot reach is a resolution the product does not have. Whole degrees would
-have made 21.5 °C unreachable on any path.
+and nothing else, so on the post the menu is the *only* way to set a threshold — and a
+resolution the menu cannot reach is a resolution the product does not have. Whole
+degrees would have made 21.5 °C unreachable on the post. (The Sheet can also set the
+band, in any resolution; see **Controlling a fleet**.)
 
 Two things follow:
 
@@ -1040,27 +1041,33 @@ the form were trying to be.** Five tanks meant five tabs, five round trips, and 
 chances to type a different number — which is precisely the case that wanted "the
 same band everywhere".
 
-The shape that fits is **config on the upload response**. Every post already POSTs a
+The shape that fits is **config on the upload reply**. Every post already POSTs a
 batch on its own cadence; that channel is already outbound, already survives NAT,
-already retries, and already knows which device is speaking. The reply can carry a
-desired configuration, and a post applies it through the same `settings::set_*`
-setters everything else uses. Fill a column down in the Sheet and the whole group
-moves together.
+already retries, and already knows which device is speaking. The reply carries what
+the Sheet wants, and a post applies it through the same `settings::set_*` setters
+everything else uses. Two things travel this way today: the release a post should run
+(see **Releases, and updating a fleet over the air**) and the alarm band.
 
-Apps Script can do this today — `doPost` returns arbitrary JSON and has the Sheet as
-its state store, so a `config` tab keyed by device id is enough. A dedicated service
-would buy push latency and real authentication, not the capability.
+**The band has two levels, like the firmware target.** `band_min_c` and `band_max_c`
+in the `config` tab set it for every post; the same two columns in a post's `posts`
+row override it for that post, which is the case of one or two tanks on a different
+material. Each bound is resolved on its own, and a bound blank in both places is left
+to the post. The full table is in
+[`tools/cloud_apps_script.md`](tools/cloud_apps_script.md#6-the-alarm-band).
 
-Three things to settle when it is built, recorded here because they are cheap now and
-expensive later:
+Settled along the way:
 
-- **Who wins.** The menu changes the same values locally. A generation counter is the
-  usual answer: the post sends its config generation with each batch, the server
-  replies only when it holds a newer one, and a local edit bumps it. Without that,
-  either a local change is clobbered every minute by stale desired state, or a server
-  change re-lands forever.
-- **A pushed config is untrusted input**, exactly like a form post. It goes through
-  the setters, which already clamp — not around them.
+- **The Sheet wins while a bound is set.** A bound from the Sheet is locked on the
+  Temperature page: its discs go muted and stop responding, and the footer says the
+  Sheet set it. Clearing the cell hands it back, at the value it last had. A generation
+  counter would have let both sides edit, but a band that changes depending on who
+  touched it last is not one a fleet manager can reason about.
+- **A pushed config is untrusted input**, exactly like a form post. The band goes
+  through the setters, which clamp it to the sensor's range; one that is inverted or
+  narrower than a degree is refused whole and logged, and the post keeps its old band.
+- **The Sheet can see the result.** Each upload reports the band the post alarms on,
+  shown in the `posts` tab's `band` column and in alert emails, including the posts
+  that set their own.
 - **Two things can never arrive this way.** Wi-Fi credentials, because they *are* the
   channel; and the endpoint URL, since a wrong one cannot deliver its own correction.
   Those stay on the form permanently, which is a better argument for the form's
@@ -1381,6 +1388,7 @@ returns.
 | ✅ Built | the quiet wake — a timer wake records, judges the alarm and uploads on the dark cadence without lighting the screen, coming up fully only for an alarm or a charger |
 | ✅ Built | the OTA layout — two app slots, a rollback bootloader, and log numbering that never falls below the upload mark |
 | ✅ Verified | over-the-air updates — by hand from the console, then from a post's `fw_pin`, a downgrade through the Sheet, and a fleet rollout from `fw_target`, each new image kept only once it uploaded. A rejected hash and a deadline rollback are built but not yet exercised |
+| ✅ Built | the band from the Sheet — `config` for the fleet, a `posts` row for one post, locked on the Temperature page while set |
 | 🟨 Gated | sleeping on idle — the ladder's fourth rung, behind `kAutoSleepReady` until the quiet wake has run on the bench and the sleep current is metered |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →

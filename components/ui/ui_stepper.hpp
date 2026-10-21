@@ -62,6 +62,10 @@ struct StepperState {
   // end to end, where any fixed step over that range is either hundreds of taps or
   // too coarse to be useful near the bottom.
   void (*format)(char* out, size_t n, int16_t value);
+
+  // The discs, kept by build_stepper so stepper_set_locked() can reach them.
+  lv_obj_t*   minus;
+  lv_obj_t*   plus;
 };
 
 // Visual config — the thresholds page wants a compact pair side by side, so the
@@ -113,5 +117,9 @@ void stepper_refresh(StepperState* st);
 // actually moved, so a caller can persist only when something changed. This is what
 // a coupled sibling calls after narrowing this stepper's bounds.
 bool stepper_clamp(StepperState* st);
+
+// Show the value as set elsewhere: the discs go muted and ignore taps, and the value
+// stays readable. For a setting the Sheet controls.
+void stepper_set_locked(StepperState* st, bool locked);
 
 }  // namespace thermopost::ui

@@ -158,6 +158,13 @@ std::string build_payload(const Envelope& env, const RecordJson* recs, size_t n)
   out += ',';
   opt_str_field(out, "fw_rejected", env.rejected);
   out += ',';
+  // The same shape as the band in the reply, so the two read as one exchange.
+  key(out, "band");
+  out += '{';
+  temp_field(out, "min_c", env.band_min_c100);
+  out += ',';
+  temp_field(out, "max_c", env.band_max_c100);
+  out += "},";
   key(out, "records");
   out += '[';
   for (size_t i = 0; i < n; ++i) {

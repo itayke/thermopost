@@ -18,6 +18,8 @@ constexpr const char* kNvsNamespace = "settings";
 constexpr const char* kKeyInterval = "iv";
 constexpr const char* kKeyMin      = "lo";
 constexpr const char* kKeyMax      = "hi";
+constexpr const char* kKeyMinSheet = "ls";
+constexpr const char* kKeyMaxSheet = "hs";
 constexpr const char* kKeyHyst     = "hy";
 constexpr const char* kKeyPoints   = "gp";
 constexpr const char* kKeyUpload   = "ue";
@@ -71,6 +73,8 @@ Settings s_cur = {
     .interval_s      = kIntervalDefaultS,
     .min_c100        = kMinDefaultC100,
     .max_c100        = kMaxDefaultC100,
+    .min_from_sheet  = false,
+    .max_from_sheet  = false,
     .hysteresis_c100 = kHysteresisDefaultC100,
     .graph_points    = kGraphPointsDefault,
     .upload_every_min = kUploadEveryDefaultMin,
@@ -201,6 +205,8 @@ esp_err_t init() {
   if (nvs_get_u16(h, kKeyInterval, &u16) == ESP_OK) s_cur.interval_s = clamp_interval(u16);
   if (nvs_get_u16(h, kKeyMin, &u16) == ESP_OK) s_cur.min_c100 = clamp_temp(static_cast<int16_t>(u16));
   if (nvs_get_u16(h, kKeyMax, &u16) == ESP_OK) s_cur.max_c100 = clamp_temp(static_cast<int16_t>(u16));
+  if (nvs_get_u8(h, kKeyMinSheet, &u8) == ESP_OK) s_cur.min_from_sheet = (u8 != 0);
+  if (nvs_get_u8(h, kKeyMaxSheet, &u8) == ESP_OK) s_cur.max_from_sheet = (u8 != 0);
   if (nvs_get_u16(h, kKeyHyst, &u16) == ESP_OK) s_cur.hysteresis_c100 = clamp_hysteresis(static_cast<int16_t>(u16));
   if (nvs_get_u16(h, kKeyPoints, &u16) == ESP_OK) s_cur.graph_points = clamp_points(u16);
   if (nvs_get_u16(h, kKeyUpload, &u16) == ESP_OK) s_cur.upload_every_min = clamp_upload(u16);
@@ -240,12 +246,13 @@ esp_err_t init() {
   std::snprintf(upload_text, sizeof(upload_text), "%umin lit / %umin dark (0=every)",
                 static_cast<unsigned>(s_cur.upload_every_min),
                 static_cast<unsigned>(s_cur.upload_dark_min));
-  ESP_LOGI(kTag, "'%s': interval %us, band %.2f..%.2f C (hyst %.2f), %u graph points, "
+  ESP_LOGI(kTag, "'%s': interval %us, band %.2f..%.2f C%s (hyst %.2f), %u graph points, "
                  "upload %s, %s, sound %s @ %u%%",
            s_cur.name,
            static_cast<unsigned>(s_cur.interval_s),
            static_cast<double>(c100_to_c(s_cur.min_c100)),
            static_cast<double>(c100_to_c(s_cur.max_c100)),
+           s_cur.min_from_sheet || s_cur.max_from_sheet ? " from the Sheet" : "",
            static_cast<double>(c100_to_c(s_cur.hysteresis_c100)),
            static_cast<unsigned>(s_cur.graph_points),
            upload_text,
@@ -276,6 +283,33 @@ esp_err_t set_band(int16_t min_c100, int16_t max_c100) {
   s_cur.min_c100 = min_c100;
   s_cur.max_c100 = max_c100;
   const bool ok = persist_i16(kKeyMin, min_c100) && persist_i16(kKeyMax, max_c100);
+  return ok ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t set_band_from_sheet(SheetBound min, SheetBound max) {
+  const int16_t lo = min.set ? clamp_temp(min.c100) : s_cur.min_c100;
+  const int16_t hi = max.set ? clamp_temp(max.c100) : s_cur.max_c100;
+  // Refused rather than repaired: swapping or widening would store a band nobody wrote,
+  // and the Sheet's band column shows the post kept its old one.
+  if (hi - lo < kSheetBandMinGapC100) {
+    ESP_LOGW(kTag, "band %.2f..%.2f C from the Sheet refused: inverted or too narrow",
+             static_cast<double>(c100_to_c(lo)), static_cast<double>(c100_to_c(hi)));
+    return ESP_ERR_INVALID_ARG;
+  }
+  bool ok = true;
+  if (min.set != s_cur.min_from_sheet) {
+    s_cur.min_from_sheet = min.set;
+    ok = persist<uint8_t>(kKeyMinSheet, min.set ? 1 : 0) && ok;
+  }
+  if (max.set != s_cur.max_from_sheet) {
+    s_cur.max_from_sheet = max.set;
+    ok = persist<uint8_t>(kKeyMaxSheet, max.set ? 1 : 0) && ok;
+  }
+  if (lo != s_cur.min_c100 || hi != s_cur.max_c100) {
+    ESP_LOGI(kTag, "band set from the Sheet: %.2f..%.2f C",
+             static_cast<double>(c100_to_c(lo)), static_cast<double>(c100_to_c(hi)));
+  }
+  ok = set_band(lo, hi) == ESP_OK && ok;
   return ok ? ESP_OK : ESP_FAIL;
 }
 
@@ -377,8 +411,12 @@ esp_err_t reset_to_defaults() {
       .interval_s      = kIntervalDefaultS,
       .min_c100        = kMinDefaultC100,
       .max_c100        = kMaxDefaultC100,
+      .min_from_sheet  = false,
+      .max_from_sheet  = false,
       .hysteresis_c100 = kHysteresisDefaultC100,
       .graph_points    = kGraphPointsDefault,
+      .upload_every_min = kUploadEveryDefaultMin,
+      .upload_dark_min  = kUploadDarkDefaultMin,
       .unit            = TempUnit::Fahrenheit,
       .sound_enabled   = true,
       .volume_pct      = kVolumeDefaultPct,

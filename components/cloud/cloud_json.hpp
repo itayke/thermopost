@@ -84,6 +84,9 @@ struct Envelope {
   std::string firmware;
   // A release this post rolled back because it never proved itself, or empty (null).
   std::string rejected;
+  // The band in force, so the Sheet shows what each post alarms on, wherever it was set.
+  int16_t     band_min_c100 = kInvalidTempC100;
+  int16_t     band_max_c100 = kInvalidTempC100;
 };
 
 // Escape a string's contents for embedding between JSON double quotes (does NOT
@@ -107,7 +110,7 @@ void append_record(std::string& out, const RecordJson& r);
 
 // Build the full request body:
 //   {"token":"…","device":"…","name":"…","batt_mv":…,"batt_pct":…,"ext":…,
-//    "gap_s":…,"records":[ {…}, … ]}
+//    "gap_s":…,"fw":…,"fw_rejected":…,"band":{"min_c":…,"max_c":…},"records":[ {…}, … ]}
 std::string build_payload(const Envelope& env, const RecordJson* recs, size_t n);
 
 }  // namespace thermopost::cloud::json

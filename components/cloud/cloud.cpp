@@ -31,6 +31,7 @@
 #include "nvs.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -100,9 +101,12 @@ constexpr uint32_t kBackoffMinMs  = 5'000;
 constexpr uint32_t kBackoffMaxMs  = 300'000;
 constexpr uint32_t kBackoffFactor = 2;
 
-// How much of the response to keep: whether it contains "ok":true, the release the
-// Sheet wants this post on, and enough of the rest to be worth logging when it fails.
+// How much of the response to keep: whether it contains "ok":true, the release and the
+// band the Sheet wants this post on, and enough of the rest to be worth logging when it fails.
 constexpr size_t kRespCapBytes = 512;
+
+// The Sheet's band arrives in degrees and is stored in hundredths.
+constexpr double kC100PerDegree = 100.0;
 
 // Event bits driving the sync task.
 constexpr EventBits_t kBitGotIp     = 1u << 0;
@@ -471,12 +475,7 @@ esp_err_t http_post(const char* url, const std::string& body, int* out_status, R
 
 // Hand the release the reply names, if any, to the updater, which decides whether now
 // is the time.
-void take_offer(const char* reply) {
-  cJSON* root = cJSON_Parse(reply);
-  if (root == nullptr) {
-    if (std::strstr(reply, "\"fw\"") != nullptr) ESP_LOGW(kTag, "update offer cut short");
-    return;
-  }
+void take_offer(const cJSON* root) {
   const cJSON* fw  = cJSON_GetObjectItemCaseSensitive(root, "fw");
   const cJSON* ver = cJSON_GetObjectItemCaseSensitive(fw, "version");
   const cJSON* url = cJSON_GetObjectItemCaseSensitive(fw, "url");
@@ -494,6 +493,36 @@ void take_offer(const char* reply) {
       ota::offer(t);
     }
   }
+}
+
+// One bound of the reply's band. Anything but a number, null included, hands it back to
+// the menu; clamped to the sensor's range here so the conversion cannot overflow.
+settings::SheetBound sheet_bound(const cJSON* band, const char* key) {
+  const cJSON* v = cJSON_GetObjectItemCaseSensitive(band, key);
+  if (!cJSON_IsNumber(v)) return {false, 0};
+  const double c100 = std::clamp(v->valuedouble * kC100PerDegree,
+                                 static_cast<double>(settings::kTempFloorC100),
+                                 static_cast<double>(settings::kTempCeilC100));
+  return {true, static_cast<int16_t>(std::lround(c100))};
+}
+
+// Apply the band the reply sets. No `band` at all, from an older script or a lookup that
+// failed, changes nothing; settings refuses a band it cannot use, and logs why.
+void take_band(const cJSON* root) {
+  const cJSON* band = cJSON_GetObjectItemCaseSensitive(root, "band");
+  if (!cJSON_IsObject(band)) return;
+  settings::set_band_from_sheet(sheet_bound(band, "min_c"), sheet_bound(band, "max_c"));
+}
+
+// What the Sheet sends back besides "ok": a release to move to, and the band.
+void take_reply(const char* reply) {
+  cJSON* root = cJSON_Parse(reply);
+  if (root == nullptr) {
+    ESP_LOGW(kTag, "reply cut short or unreadable; its release and band are ignored");
+    return;
+  }
+  take_offer(root);
+  take_band(root);
   cJSON_Delete(root);
 }
 
@@ -552,6 +581,8 @@ BatchResult upload_batch() {
   env.external = power::on_external_power();
   env.firmware = ota::version();
   env.rejected = ota::rejected();
+  env.band_min_c100 = cfg.min_c100;
+  env.band_max_c100 = cfg.max_c100;
 
   // Here as well as at init, for a log erased while the post runs.
   if (hwm > storage::next_index()) storage::raise_index_floor(hwm);
@@ -618,7 +649,7 @@ BatchResult upload_batch() {
            static_cast<unsigned long>(storage::next_index()));
   // A new image's self-test is exactly this: it reached the Sheet and was accepted.
   ota::confirm();
-  take_offer(resp.buf);
+  take_reply(resp.buf);
   return BatchResult::Ok;
 }
 

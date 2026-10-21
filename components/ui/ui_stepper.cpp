@@ -124,12 +124,12 @@ lv_obj_t* build_stepper(lv_obj_t* parent, StepperState* st, const StepperCfg& cf
     lv_obj_align(st->value_lbl, LV_ALIGN_CENTER, 0, 0);
   }
 
-  lv_obj_t* minus = build_disc(row, LV_SYMBOL_MINUS, cfg.btn_diam, stepper_minus,
-                               stepper_minus_hold, st);
-  lv_obj_align(minus, LV_ALIGN_CENTER, -cfg.btn_dx, 0);
-  lv_obj_t* plus = build_disc(row, LV_SYMBOL_PLUS, cfg.btn_diam, stepper_plus,
-                              stepper_plus_hold, st);
-  lv_obj_align(plus, LV_ALIGN_CENTER, +cfg.btn_dx, 0);
+  st->minus = build_disc(row, LV_SYMBOL_MINUS, cfg.btn_diam, stepper_minus,
+                         stepper_minus_hold, st);
+  lv_obj_align(st->minus, LV_ALIGN_CENTER, -cfg.btn_dx, 0);
+  st->plus = build_disc(row, LV_SYMBOL_PLUS, cfg.btn_diam, stepper_plus,
+                        stepper_plus_hold, st);
+  lv_obj_align(st->plus, LV_ALIGN_CENTER, +cfg.btn_dx, 0);
 
   stepper_refresh(st);
   return row;
@@ -150,6 +150,18 @@ void stepper_refresh(StepperState* st) {
   lv_label_set_text(st->value_lbl, buf);
   if (st->suffix_lbl != nullptr) {
     lv_label_set_text(st->suffix_lbl, st->suffix != nullptr ? st->suffix : "");
+  }
+}
+
+void stepper_set_locked(StepperState* st, bool locked) {
+  if (st == nullptr || st->minus == nullptr) return;
+  for (lv_obj_t* disc : {st->minus, st->plus}) {
+    pill_set_color(disc, locked ? kColorMuted : kColorStepper);
+    if (locked) {
+      lv_obj_remove_flag(disc, LV_OBJ_FLAG_CLICKABLE);
+    } else {
+      lv_obj_add_flag(disc, LV_OBJ_FLAG_CLICKABLE);
+    }
   }
 }
 

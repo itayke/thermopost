@@ -274,8 +274,12 @@ void format_tenths(char* out, size_t n, int16_t v) {
   std::snprintf(out, n, "%s%d.%d", sign, whole, frac);
 }
 
+// A bound the Sheet sets is written back as stored, so an edit to its sibling cannot
+// carry a stale copy over a band that arrived while the page was open.
 void write_through() {
-  settings::set_band(min_c100(), max_c100());
+  const settings::Settings s = settings::get();
+  settings::set_band(s.min_from_sheet ? s.min_c100 : min_c100(),
+                     s.max_from_sheet ? s.max_c100 : max_c100());
   settings::set_hysteresis_c100(hyst_c100());
 }
 
@@ -302,16 +306,30 @@ void flush_persist() {
   write_through();
 }
 
-// The stored Celsius hundredths, always, whatever the steppers are showing. In °C
+// Which bounds the Sheet sets, or null when it sets neither.
+const char* sheet_note() {
+  const settings::Settings s = settings::get();
+  if (s.min_from_sheet && s.max_from_sheet) return "band set from the Sheet";
+  if (s.min_from_sheet) return "alarm below set from the Sheet";
+  if (s.max_from_sheet) return "alarm above set from the Sheet";
+  return nullptr;
+}
+
+// The stored Celsius hundredths, whatever the steppers are showing. In °C
 // that is the same number with one more decimal; in °F it is the payoff — a band
 // set in Fahrenheit is not a round number of Celsius, and this is where that shows
-// rather than looking like drift somewhere else.
+// rather than looking like drift somewhere else. A band the Sheet sets says so instead,
+// since the locked discs need an explanation more than the hundredths do.
 void refresh_footer() {
   // Any hint still showing is stale the moment a value moves, and cancelling it here
   // rather than letting it expire keeps the timer from overwriting a fresher line.
   if (s_hint != nullptr) {
     lv_timer_delete(s_hint);
     s_hint = nullptr;
+  }
+  if (const char* note = sheet_note()) {
+    lv_label_set_text(s_page.footer, note);
+    return;
   }
   char text[kTextMax];
   std::snprintf(text, sizeof(text), "stored %.2f to %.2f C, clears by %.2f",
@@ -395,6 +413,8 @@ void load() {
   s_hyst.value = settings::display_span_tenths(s.hysteresis_c100);
 
   lv_label_set_text(pill_label(s_unit), suffix);
+  stepper_set_locked(&s_min, s.min_from_sheet);
+  stepper_set_locked(&s_max, s.max_from_sheet);
 
   rebound();
   stepper_refresh(&s_min);

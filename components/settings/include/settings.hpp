@@ -108,6 +108,10 @@ constexpr int16_t kMinDefaultC100 = 2000;  // 20.00 °C
 constexpr int16_t kMaxDefaultC100 = 2500;  // 25.00 °C
 constexpr int16_t kHysteresisDefaultC100 = 50;  // 0.50 °C
 
+// The narrowest band the Sheet may set: no narrower than the menu's own steppers allow
+// in either unit, so a band from the Sheet is always one a person could have entered.
+constexpr int16_t kSheetBandMinGapC100 = 100;
+
 // Full scale, named so the setter's clamp and the menu's stepper bound are the same
 // number rather than two independent hundreds.
 constexpr uint8_t kVolumeMaxPct = 100;
@@ -148,6 +152,8 @@ struct Settings {
   uint16_t interval_s;       // seconds between samples
   int16_t  min_c100;         // alarm below this
   int16_t  max_c100;         // alarm above this
+  bool     min_from_sheet;   // the Sheet sets min_c100, and the menu shows it locked
+  bool     max_from_sheet;   // likewise for max_c100
   int16_t  hysteresis_c100;  // recovery margin; see alert_logic.hpp
   uint16_t graph_points;     // samples plotted on the timeline
   uint16_t upload_every_min; // while the screen is lit; 0 = every record
@@ -186,6 +192,18 @@ esp_err_t set_volume_pct(uint8_t pct);
 esp_err_t set_power_mode(PowerMode m);
 esp_err_t set_sleep_after_s(uint16_t v);
 
+// One bound of the band as the Sheet sends it; `set` false hands it back to the menu.
+struct SheetBound {
+  bool    set;
+  int16_t c100;
+};
+
+// Apply the band from the Sheet's upload reply. A bound the Sheet sets is stored and
+// locked on the menu until a later reply leaves it blank; a blank one keeps its local
+// value. Refused whole, with ESP_ERR_INVALID_ARG and nothing changed, when the result
+// would be inverted or narrower than kSheetBandMinGapC100.
+esp_err_t set_band_from_sheet(SheetBound min, SheetBound max);
+
 // Set the post name. Sanitizes rather than rejects — non-ASCII bytes dropped,
 // surrounding spaces trimmed, truncated to kNameMaxLen — because a value arriving
 // from a web form cannot be trusted to have honoured its own maxlength. An empty
@@ -196,7 +214,8 @@ esp_err_t set_sleep_after_s(uint16_t v);
 // setting, and an on-screen keyboard on a 2.8" panel is the worst possible way to
 // enter one; the web config form owns it — along with the network and the Sheet
 // endpoint, and nothing else. Every setting above is a number or a toggle, which a
-// touchscreen does well, and the menu is the only place they are edited.
+// touchscreen does well, and the menu is where they are edited; the band can also
+// come from the Sheet, through set_band_from_sheet().
 esp_err_t set_name(const char* s);
 
 // The alarm band in the form alert::step() wants. Already passed through
@@ -205,7 +224,8 @@ alert::Thresholds thresholds();
 
 // Restore every setting to its default and persist. Backs a "reset settings"
 // menu action and the `settings reset` serial command. The post name is the one
-// exception and survives — it is identity, not a tunable.
+// exception and survives — it is identity, not a tunable. A band the Sheet sets is
+// released with the rest, and comes back with the next upload's reply.
 esp_err_t reset_to_defaults();
 
 // --- Display helpers. The only place the unit setting is allowed to matter. ---
@@ -224,10 +244,10 @@ const char* unit_suffix();
 // here for the same reason display_value() does — the unit setting is not allowed
 // to leak out of this component.
 //
-// Tenths rather than whole degrees because the device menu is now the *only* way
-// to set a threshold: the web config form carries the network and the post's
-// identity and nothing else, so a resolution the menu cannot reach is a
-// resolution the product does not have.
+// Tenths rather than whole degrees because the device menu is the only way to set a
+// threshold on the post: the web config form carries the network and the post's
+// identity and nothing else, so a resolution the menu cannot reach is a resolution
+// the post does not have.
 //
 // A point on the scale and a span along it convert differently: 20 °C is 68 °F,
 // but a span of 20 °C is a span of 36 °F. Feeding a hysteresis through the

@@ -38,12 +38,13 @@ relabel that post, not leave a seam in the middle of its history.
 batch, carrying its name, when it was last heard from, its pack voltage, whether
 it is on external power, the longest it means to go between uploads (`gap_s`), and
 what its newest record says about the band (`temp`: blank, `high`, `low` or
-`fault`), and the firmware it runs. `fw_pin` is the one column a person edits; see
-**5. Firmware updates**.
+`fault`), the firmware it runs, and the band it alarms on. `fw_pin`, `band_min_c` and
+`band_max_c` are the columns a person edits; see **5. Firmware updates** and **6. The
+alarm band**.
 
 `config` holds the alert settings — recipients and thresholds — as key/value rows,
-so they change without touching the script, and the release the fleet should run.
-See **4. Alerts**.
+so they change without touching the script, along with the release and the band the
+fleet should use. See **4. Alerts**.
 
 `firmware` lists the releases, one row each, written once by `tools/release.sh`. That tab exists because the alerting question —
 "which posts need a visit?" — is a scan of a handful of rows there rather than of
@@ -112,8 +113,13 @@ const STATUS_HEADERS = [
   // What the post runs, a release it rolled back, and the release it is pinned to:
   // the one column here a person edits, kept across every rewrite of the row.
   'firmware', 'fw_rejected', 'fw_pin',
+  // The band the post alarms on, and this post's own band instead of config's: the two
+  // columns after it are edited by a person and kept like fw_pin.
+  'band', 'band_min_c', 'band_max_c',
 ];
 const PIN_COL = STATUS_HEADERS.indexOf('fw_pin');
+const BAND_MIN_COL = STATUS_HEADERS.indexOf('band_min_c');
+const BAND_MAX_COL = STATUS_HEADERS.indexOf('band_max_c');
 
 // One row per release, written by tools/release.sh and never edited. `fw_target` in
 // config, or a post's `fw_pin`, names one of these by version.
@@ -132,6 +138,8 @@ const CONFIG_DEFAULTS = [
   ['silent_default_min', 60, 'the silence threshold for a post that does not send its gap'],
   ['remind_hours', 6, 'repeat an alert that is still open this often; 0 never repeats'],
   ['fw_target', '', 'the release every post should run, a version from the firmware tab; blank updates nothing'],
+  ['band_min_c', '', 'every post alarms below this, in °C, unless its posts row says otherwise; blank leaves it to the post'],
+  ['band_max_c', '', 'every post alarms above this, in °C, unless its posts row says otherwise; blank leaves it to the post'],
 ];
 
 // How often the fleet check runs. One of 1, 5, 10, 15 or 30 (Apps Script's choice).
@@ -179,6 +187,8 @@ function doPost(e) {
     // What it runs, and a release it rolled back. Blank from firmware that cannot update.
     const firmware = blankIfNull_(body.fw);
     const fwRejected = blankIfNull_(body.fw_rejected);
+    // The band the post alarms on, wherever it was set. Blank from older firmware.
+    const band = bandText_(body.band);
     const records = body.records || [];
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -237,7 +247,7 @@ function doPost(e) {
     // stale because a response was lost would raise exactly the wrong alarm.
     const batch = summarize_(records);
     const post = upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch,
-                               firmware, fwRejected);
+                               firmware, fwRejected, band);
     const cfg = config_(ss);
 
     // This post's alerts now, while its batch is in hand. Silence is the timed
@@ -258,6 +268,9 @@ function doPost(e) {
     } catch (fwErr) {
       console.error('firmware check failed: ' + fwErr);
     }
+    // The band, sent on every reply so a cleared cell hands a bound back to the post.
+    const b = bandFor_(cfg, post);
+    if (b) reply.band = b;
     return json_(reply);
   } catch (err) {
     return json_({ ok: false, error: String(err) });
@@ -305,7 +318,8 @@ function installAlerts() {
 
 // One row per device, found by device id and rewritten in place. Returns the post as
 // the alert check reads it.
-function upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch, firmware, fwRejected) {
+function upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch, firmware, fwRejected,
+                       band) {
   let sh = ss.getSheetByName(STATUS);
   if (!sh) {
     sh = ss.insertSheet(STATUS);
@@ -326,9 +340,12 @@ function upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch, firm
   // A batch with no records keeps what the last one said about the readings.
   const lastIndex = batch.lastIndex !== null ? batch.lastIndex : (prev ? prev[6] : '');
   const temp = batch.latest !== null ? batch.latest : (prev ? prev[8] : '');
+  // The columns a person edits, carried across the rewrite.
   const pin = prev ? prev[PIN_COL] : '';
+  const bandMin = prev ? prev[BAND_MIN_COL] : '';
+  const bandMax = prev ? prev[BAND_MAX_COL] : '';
   const row = [device, name, new Date(), battMv, battPct, ext, lastIndex, gapS, temp,
-               firmware, fwRejected, pin];
+               firmware, fwRejected, pin, band, bandMin, bandMax];
 
   if (rowNum) {
     sh.getRange(rowNum, 1, 1, STATUS_HEADERS.length).setValues([row]);
@@ -349,7 +366,40 @@ function post_(row) {
     device: row[0], name: row[1], lastSeen: row[2], battMv: row[3], battPct: row[4],
     ext: row[5] === true, gapS: row[7], temp: row[8] || '',
     firmware: String(row[9] || ''), fwPin: String(row[PIN_COL] || '').trim(),
+    band: row[STATUS_HEADERS.indexOf('band')] || '',
+    bandMin: row[BAND_MIN_COL], bandMax: row[BAND_MAX_COL],
   };
+}
+
+// --- The band -------------------------------------------------------------------
+
+// The band this post should alarm on, each bound from its posts row, else from config,
+// else null to leave it to the post. Null overall when a cell is not a number, so a typo
+// changes nothing rather than handing the bound back.
+function bandFor_(cfg, post) {
+  const min = bound_(post.bandMin, cfg.band_min_c);
+  const max = bound_(post.bandMax, cfg.band_max_c);
+  if (min === undefined || max === undefined) {
+    console.warn((post.name || post.device) + ': a band cell is not a number; its band is unchanged');
+    return null;
+  }
+  return { min_c: min, max_c: max };
+}
+
+// The post's cell if set, else config's: a number, null when both are blank, or
+// undefined when the one in force is not a number.
+function bound_(own, fleet) {
+  const v = String(blankIfNull_(own)).trim() !== '' ? own : fleet;
+  if (String(blankIfNull_(v)).trim() === '') return null;
+  const n = Number(v);
+  return isFinite(n) ? n : undefined;
+}
+
+// What the post reports, as the posts tab shows it.
+function bandText_(band) {
+  if (!band || band.min_c === null || band.max_c === null ||
+      band.min_c === undefined || band.max_c === undefined) return '';
+  return band.min_c + ' – ' + band.max_c + ' °C';
 }
 
 // --- Firmware -----------------------------------------------------------------
@@ -490,6 +540,7 @@ function postDetails_(cfg, post) {
   const batt = post.battPct === '' ? 'no battery sense'
       : post.battPct + '% (' + post.battMv + ' mV)' + (post.ext ? ', on external power' : '');
   return '\nLast heard from: ' + when_(cfg, post.lastSeen) +
+         (post.band ? '\nBand: ' + post.band : '') +
          '\nBattery: ' + batt +
          '\nDevice: ' + post.device +
          '\n\n' + cfg.url;
@@ -659,6 +710,36 @@ version like `1.10` typed into `fw_target` or `fw_pin` can turn into the number 
 A typical rollout: pin one post, watch its `firmware` cell change and its uploads keep
 arriving, then set `fw_target` and clear the pin. Setting `fw_target` back stops a bad
 release; posts that already took it return to the old one the same way.
+
+## 6. The alarm band
+
+The band each post alarms on can be set from the Sheet, for the whole fleet or for
+one post. Every reply carries it, and the post applies it through the same setters the
+touchscreen uses.
+
+| where | what | who edits it |
+|---|---|---|
+| `config` ▸ `band_min_c`, `band_max_c` | the band every post alarms on, in °C | you |
+| `posts` ▸ `band_min_c`, `band_max_c` | this post's band instead of config's | you, for a post on a different material |
+| `posts` ▸ `band` | the band the post alarms on now, wherever it was set | the post |
+
+**Each bound is resolved on its own**: the post's cell if it has one, else config's.
+A post with only `band_max_c` set takes its maximum from its row and its minimum from
+`config`.
+
+**Blank hands a bound back to the post.** While the Sheet sets a bound, the post's
+Temperature page shows it with muted discs that do not respond, and the footer says
+the Sheet set it. Clear the cell in both places and the next reply unlocks it, keeping
+the value it last had.
+
+**What the post refuses.** A band that is inverted, or narrower than a whole degree,
+is refused whole and logged, and the post keeps the band it had. A bound outside the
+sensor's range (−40 to 125 °C) is clamped to it. A cell that is not a number changes
+nothing, and the script's executions log says which post it was.
+
+The `band` column changes one upload after the band does, because each upload reports
+the band in force when it was sent. The email alerts follow the post's own flags, so
+they move with the band without any change here.
 
 ## Notes / gotchas
 
