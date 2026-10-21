@@ -13,15 +13,16 @@
 // Boot order, each step logging and continuing where it can:
 //
 //   display → nvs → storage → settings → i2c → sensor → touch → audio → recorder → ui
-//           → shell → cloud → alert → power
+//           → shell → ota → cloud → alert → power
 //
 // Display comes first so a failure downstream still has somewhere to be shown.
 // `recorder` precedes `ui` because the graph is drawn from the ring that
 // recorder::init() backfills — the other way round would paint an empty chart and
 // then fill it a frame later. `shell` precedes `cloud` because esp_console's
-// command list is created there and a registration before it fails. `alert` comes
-// last of the running parts because it needs the sensor, the settings and the
-// codec and is needed by none of them; the UI reads it before it starts, which is
+// command list is created there and a registration before it fails. `ota` precedes
+// `cloud` so the first upload already carries the version and can confirm a new image.
+// `alert` comes last of the running parts because it needs the sensor, the settings
+// and the codec and is needed by none of them; the UI reads it before it starts, which is
 // safe — alert::status() answers Normal until the first tick. `power` is last of
 // all: its ladder reads the alarm, and it takes over the backlight from the fixed
 // level set at the bottom of this function.
@@ -35,6 +36,7 @@
 #include "alert.hpp"
 #include "audio.hpp"
 #include "cloud.hpp"
+#include "ota.hpp"
 #include "power.hpp"
 #include "display.hpp"
 #include "recorder.hpp"
@@ -179,6 +181,9 @@ extern "C" void app_main(void) {
   // Not part of display::init(): esp_console has no command list until the REPL
   // above creates one, so `shot` has to be registered on this side of it.
   display::register_console();
+  // Before the uploader: a new image starts its proving deadline here, and the first
+  // upload is what passes it.
+  step("ota", ota::init());
   // Non-fatal for the same reason the sensor is: a post with no network still
   // samples, logs and alarms. It just cannot stamp a wall-clock time or upload —
   // and this board has no RTC, so the clock is genuinely the radio's to bring.

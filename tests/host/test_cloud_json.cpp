@@ -141,7 +141,8 @@ TEST_CASE("the envelope carries token, device and name around the records",
 
   CHECK(s.rfind("{\"token\":\"tok\",\"device\":\"a1b2c3d4e5f6\","
                 "\"name\":\"North Tank\",\"batt_mv\":3812,\"batt_pct\":62,"
-                "\"ext\":false,\"gap_s\":900,\"records\":[{", 0) == 0);
+                "\"ext\":false,\"gap_s\":900,\"fw\":null,\"fw_rejected\":null,"
+                "\"records\":[{", 0) == 0);
   CHECK(s.substr(s.size() - 3) == "}]}");
   // Two records, one comma between them.
   CHECK(s.find("},{") != std::string::npos);
@@ -151,7 +152,8 @@ TEST_CASE("an empty batch still produces valid JSON", "[json][payload]") {
   const Envelope env{"tok", "dev", "post", 4102, 91, true};
   CHECK(build_payload(env, nullptr, 0) ==
         "{\"token\":\"tok\",\"device\":\"dev\",\"name\":\"post\","
-        "\"batt_mv\":4102,\"batt_pct\":91,\"ext\":true,\"gap_s\":null,\"records\":[]}");
+        "\"batt_mv\":4102,\"batt_pct\":91,\"ext\":true,\"gap_s\":null,"
+        "\"fw\":null,\"fw_rejected\":null,\"records\":[]}");
 }
 
 TEST_CASE("a post with no usable battery reading sends null, not a sentinel",
@@ -193,4 +195,16 @@ TEST_CASE("a name with a quote in it cannot break out of the envelope",
   const Envelope env{"tok", "dev", "Bob\"s Tank"};
   const std::string s = build_payload(env, nullptr, 0);
   CHECK(s.find("\"name\":\"Bob\\\"s Tank\"") != std::string::npos);
+}
+
+TEST_CASE("the envelope names the firmware, and a rolled-back release when there is one",
+          "[json][payload]") {
+  // The Sheet decides from `fw` whether this post needs an update; null keeps a post
+  // on firmware that cannot update from being offered one.
+  Envelope env{"tok", "dev", "post"};
+  env.firmware = "0.2.0";
+  CHECK(build_payload(env, nullptr, 0).find("\"fw\":\"0.2.0\",\"fw_rejected\":null") !=
+        std::string::npos);
+  env.rejected = "0.3.0";
+  CHECK(build_payload(env, nullptr, 0).find("\"fw_rejected\":\"0.3.0\"") != std::string::npos);
 }

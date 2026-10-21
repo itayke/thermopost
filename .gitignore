@@ -1,4 +1,6 @@
 build/
+# tools/release.sh's own build, kept apart so a release never reuses a dev configure.
+build-release/
 sdkconfig
 sdkconfig.old
 managed_components/

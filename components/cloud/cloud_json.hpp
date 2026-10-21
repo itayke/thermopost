@@ -79,6 +79,11 @@ struct Envelope {
   // sent as null. What lets the Sheet call a post silent without knowing its
   // cadence settings: a fixed threshold would fire all day on a post set to an hour.
   uint32_t    gap_s = 0;
+  // The running firmware's version, which the Sheet compares with the release it
+  // wants this post on. Empty sends null.
+  std::string firmware;
+  // A release this post rolled back because it never proved itself, or empty (null).
+  std::string rejected;
 };
 
 // Escape a string's contents for embedding between JSON double quotes (does NOT

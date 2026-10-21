@@ -48,6 +48,16 @@ void str_field(std::string& out, const char* k, const std::string& v) {
   out += '"';
 }
 
+// A string, or `null` when it is empty.
+void opt_str_field(std::string& out, const char* k, const std::string& v) {
+  if (v.empty()) {
+    key(out, k);
+    out += "null";
+  } else {
+    str_field(out, k, v);
+  }
+}
+
 }  // namespace
 
 std::string escape(const std::string& s) {
@@ -143,6 +153,10 @@ std::string build_payload(const Envelope& env, const RecordJson* recs, size_t n)
   out += ',';
   key(out, "gap_s");
   out += env.gap_s == 0 ? "null" : std::to_string(env.gap_s);
+  out += ',';
+  opt_str_field(out, "fw", env.firmware);
+  out += ',';
+  opt_str_field(out, "fw_rejected", env.rejected);
   out += ',';
   key(out, "records");
   out += '[';

@@ -23,6 +23,7 @@ idf_component_register(
         board_i2c
         cloud
         display
+        ota
         recorder
         sensor
         shell

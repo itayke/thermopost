@@ -17,6 +17,8 @@ idf_component_register(
         esp-tls           # TLS transport for the HTTP client
         mbedtls           # esp_crt_bundle_attach — the bundled Google roots
         nvs_flash         # endpoint + high-water mark (and the driver's creds)
+        json              # cJSON, for the update offer in the upload reply
+        ota               # ours: the version sent, the offer taken, the self-test passed
         console           # esp_console — the `cloud` command
         shell             # ours: the REPL those commands land in
         power             # the idle tier picks which upload cadence applies

@@ -30,7 +30,7 @@ A rename retags the queued backlog too, because records are labelled at upload
 rather than at write — which is the behaviour you want: renaming a post should
 relabel that post, not leave a seam in the middle of its history.
 
-## Three tabs, and why
+## Four tabs, and why
 
 `readings` is the history: one row per record, deduped on `device` + `index`.
 
@@ -38,10 +38,14 @@ relabel that post, not leave a seam in the middle of its history.
 batch, carrying its name, when it was last heard from, its pack voltage, whether
 it is on external power, the longest it means to go between uploads (`gap_s`), and
 what its newest record says about the band (`temp`: blank, `high`, `low` or
-`fault`).
+`fault`), and the firmware it runs. `fw_pin` is the one column a person edits; see
+**5. Firmware updates**.
 
 `config` holds the alert settings — recipients and thresholds — as key/value rows,
-so they change without touching the script. See **4. Alerts**. That tab exists because the alerting question —
+so they change without touching the script, and the release the fleet should run.
+See **4. Alerts**.
+
+`firmware` lists the releases, one row each, written once by `tools/release.sh`. That tab exists because the alerting question —
 "which posts need a visit?" — is a scan of a handful of rows there rather than of
 a hundred thousand in `readings`. A conditional-format rule or a time-driven
 trigger over `posts` is a few lines; the same thing over the history is not.
@@ -105,7 +109,16 @@ const STATUS_HEADERS = [
   'device', 'name', 'last_seen', 'batt_mv', 'batt_pct', 'ext', 'last_index',
   // Appended, like the readings columns, so an existing tab keeps its layout.
   'gap_s', 'temp',
+  // What the post runs, a release it rolled back, and the release it is pinned to:
+  // the one column here a person edits, kept across every rewrite of the row.
+  'firmware', 'fw_rejected', 'fw_pin',
 ];
+const PIN_COL = STATUS_HEADERS.indexOf('fw_pin');
+
+// One row per release, written by tools/release.sh and never edited. `fw_target` in
+// config, or a post's `fw_pin`, names one of these by version.
+const FIRMWARE = 'firmware';
+const FIRMWARE_HEADERS = ['version', 'url', 'sha256', 'notes'];
 
 // What the fleet manager tunes, in the `config` tab. Created with these defaults on
 // first use; a key added by a later version of this script is appended on its own.
@@ -118,6 +131,7 @@ const CONFIG_DEFAULTS = [
   ['silent_grace_min', 10, '...plus this margin'],
   ['silent_default_min', 60, 'the silence threshold for a post that does not send its gap'],
   ['remind_hours', 6, 'repeat an alert that is still open this often; 0 never repeats'],
+  ['fw_target', '', 'the release every post should run, a version from the firmware tab; blank updates nothing'],
 ];
 
 // How often the fleet check runs. One of 1, 5, 10, 15 or 30 (Apps Script's choice).
@@ -162,6 +176,9 @@ function doPost(e) {
     const ext = body.ext === true;
     // The longest the post means to go between uploads. Blank from older firmware.
     const gapS = blankIfNull_(body.gap_s);
+    // What it runs, and a release it rolled back. Blank from firmware that cannot update.
+    const firmware = blankIfNull_(body.fw);
+    const fwRejected = blankIfNull_(body.fw_rejected);
     const records = body.records || [];
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -219,18 +236,29 @@ function doPost(e) {
     // post is alive and still carries a current voltage, and a fleet view that went
     // stale because a response was lost would raise exactly the wrong alarm.
     const batch = summarize_(records);
-    const post = upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch);
+    const post = upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch,
+                               firmware, fwRejected);
+    const cfg = config_(ss);
 
     // This post's alerts now, while its batch is in hand. Silence is the timed
     // check's job, since a silent post is exactly the one that never calls this.
     try {
-      checkPost_(config_(ss), post, batch, new Date());
+      checkPost_(cfg, post, batch, new Date());
     } catch (alertErr) {
       // A failed email (quota, a bad address) must never cost the post its upload.
       console.error('alert check failed: ' + alertErr);
     }
 
-    return json_({ ok: true, written: rows.length });
+    // The release this post should move to, if any. A mistake in the firmware tab must
+    // not cost the post its upload either.
+    const reply = { ok: true, written: rows.length };
+    try {
+      const fw = firmwareFor_(ss, cfg, post);
+      if (fw) reply.fw = fw;
+    } catch (fwErr) {
+      console.error('firmware check failed: ' + fwErr);
+    }
+    return json_(reply);
   } catch (err) {
     return json_({ ok: false, error: String(err) });
   } finally {
@@ -277,7 +305,7 @@ function installAlerts() {
 
 // One row per device, found by device id and rewritten in place. Returns the post as
 // the alert check reads it.
-function upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch) {
+function upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch, firmware, fwRejected) {
   let sh = ss.getSheetByName(STATUS);
   if (!sh) {
     sh = ss.insertSheet(STATUS);
@@ -298,7 +326,9 @@ function upsertStatus_(ss, device, name, battMv, battPct, ext, gapS, batch) {
   // A batch with no records keeps what the last one said about the readings.
   const lastIndex = batch.lastIndex !== null ? batch.lastIndex : (prev ? prev[6] : '');
   const temp = batch.latest !== null ? batch.latest : (prev ? prev[8] : '');
-  const row = [device, name, new Date(), battMv, battPct, ext, lastIndex, gapS, temp];
+  const pin = prev ? prev[PIN_COL] : '';
+  const row = [device, name, new Date(), battMv, battPct, ext, lastIndex, gapS, temp,
+               firmware, fwRejected, pin];
 
   if (rowNum) {
     sh.getRange(rowNum, 1, 1, STATUS_HEADERS.length).setValues([row]);
@@ -318,7 +348,44 @@ function post_(row) {
   return {
     device: row[0], name: row[1], lastSeen: row[2], battMv: row[3], battPct: row[4],
     ext: row[5] === true, gapS: row[7], temp: row[8] || '',
+    firmware: String(row[9] || ''), fwPin: String(row[PIN_COL] || '').trim(),
   };
+}
+
+// --- Firmware -----------------------------------------------------------------
+
+// What the reply tells a post to update to: its pin, or else the fleet target, when it
+// runs something else. Null for firmware too old to update, and for a dev build, which
+// the post would refuse anyway.
+function firmwareFor_(ss, cfg, post) {
+  if (!post.firmware || /-dev$/.test(post.firmware)) return null;
+  const want = post.fwPin || String(cfg.fw_target).trim();
+  if (!want || want === post.firmware) return null;
+  const release = releases_(ss)[want];
+  if (!release) {
+    console.warn(post.name + ' wants ' + want + ', which the firmware tab does not list');
+    return null;
+  }
+  return { version: want, url: release.url, sha256: release.sha256 };
+}
+
+// The firmware tab by version.
+function releases_(ss) {
+  let sh = ss.getSheetByName(FIRMWARE);
+  if (!sh) {
+    sh = ss.insertSheet(FIRMWARE);
+    sh.appendRow(FIRMWARE_HEADERS);
+    // Text, so a version that looks like a number keeps its exact spelling.
+    sh.getRange('A:A').setNumberFormat('@');
+  }
+  const out = {};
+  const vals = sh.getDataRange().getValues();
+  for (let i = 1; i < vals.length; i++) {
+    const version = String(vals[i][0]).trim();
+    if (!version || !vals[i][1] || !vals[i][2]) continue;
+    out[version] = { url: String(vals[i][1]).trim(), sha256: String(vals[i][2]).trim().toLowerCase() };
+  }
+  return out;
 }
 
 // What a batch says about the band: how many records left it which way, how far, and
@@ -564,6 +631,32 @@ trigger rather than adding a second.
 **Email quota.** A consumer Google account sends about 100 emails a day, a Workspace
 account about 1,500. One email per change of state keeps a fleet far under that;
 `remind_hours` is the setting that spends it.
+
+## 5. Firmware updates
+
+Every upload says what firmware the post runs (`fw`), and the reply names the release
+it should run when that differs. The post decides when it is safe to take it; see the
+README's **Releases, and updating a fleet over the air**.
+
+| where | what | who edits it |
+|---|---|---|
+| `firmware` tab | `version`, `url`, `sha256`, `notes`, one row per release | pasted from `tools/release.sh`, then left alone |
+| `config` ▸ `fw_target` | the version every post should run; blank updates nothing | you, to roll out or roll back |
+| `posts` ▸ `fw_pin` | this post's version instead of the target; blank follows it | you, for a canary or to hold a post back |
+| `posts` ▸ `firmware` | what the post runs now | the post |
+| `posts` ▸ `fw_rejected` | a release it rolled back because it never uploaded | the post |
+
+The tab and the `fw_target` row appear by themselves after the new script's first
+upload. A post on a dev build (`-dev`), or on firmware too old to say what it runs, is
+never sent an offer. A target missing from the `firmware` tab is logged in the
+script's executions and offers nothing.
+
+**Use three-part versions** such as `0.2.0`. Sheets keeps those as text, while a
+version like `1.10` typed into `fw_target` or `fw_pin` can turn into the number `1.1`.
+
+A typical rollout: pin one post, watch its `firmware` cell change and its uploads keep
+arriving, then set `fw_target` and clear the pin. Setting `fw_target` back stops a bad
+release; posts that already took it return to the old one the same way.
 
 ## Notes / gotchas
 

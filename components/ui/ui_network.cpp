@@ -4,6 +4,7 @@
 #include <cstdio>
 
 #include "cloud.hpp"
+#include "ota.hpp"
 #include "settings.hpp"
 #include "ui_chrome.hpp"
 #include "ui_nav.hpp"
@@ -54,6 +55,7 @@ constexpr const char* kNoAddress      = "no address";
 constexpr const char* kNoEndpoint     = "no Sheet endpoint set";
 constexpr const char* kUploading      = "uploading...";
 constexpr const char* kRetryPending   = "upload retry pending";
+constexpr const char* kUpdating       = "updating firmware...";
 
 // "Configure", not "Setup Wi-Fi": the form behind it carries the thresholds, the
 // interval and the post's name as well as the credentials, and the AP is only the
@@ -63,9 +65,9 @@ constexpr const char* kForgetText  = "Forget";
 constexpr const char* kConfirmText = "Sure?";
 
 // The footer answers "and where do I do the rest of this", which is the question
-// a page with no text entry on it invites.
-constexpr const char* kHintProvisioning = "join the post's Wi-Fi and open any page";
-constexpr const char* kHintForm         = "the name and the Sheet URL are editable there";
+// a page with no text entry on it invites. One line: the screen ends below it.
+constexpr const char* kHintProvisioning = "join the post's Wi-Fi to set it up";
+constexpr const char* kHintForm         = "more settings in a browser";
 constexpr const char* kSetupFailed      = "could not open the setup network";
 
 // Forget drops a credential that has to be retyped from a phone, and the button
@@ -149,12 +151,17 @@ void refresh() {
   }
 
   // --- the last upload failure, kept on its own line rather than replacing the
-  // count: "how far behind am I" and "why" are different questions.
+  // count: "how far behind am I" and "why" are different questions. The firmware
+  // takes the line when there is nothing wrong to say.
   if (net.last_error != ESP_OK) {
     std::snprintf(text, sizeof(text), "last error: %s", esp_err_to_name(net.last_error));
     set_line(4, kColorFault, text);
+  } else if (ota::busy()) {
+    set_line(4, kColorSubText, kUpdating);
   } else {
-    set_line(4, kColorMuted, "");
+    std::snprintf(text, sizeof(text), "firmware %s%s", ota::version(),
+                  ota::proving() ? ", proving itself" : "");
+    set_line(4, kColorMuted, text);
   }
 
   lv_label_set_text(s_page.footer, net.provisioning ? kHintProvisioning : kHintForm);
@@ -203,6 +210,8 @@ void load() {
 
 void build(lv_obj_t* scr) {
   build_page_chrome(scr, "Network", &s_page);
+  // A wrapped second line would fall off the bottom of the screen.
+  lv_label_set_long_mode(s_page.footer, LV_LABEL_LONG_MODE_DOTS);
 
   lv_obj_t* fade[nav::kMaxFadeWidgets];
   int n = 0;

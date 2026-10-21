@@ -2,12 +2,14 @@
 
 #include "cloud_json.hpp"
 #include "cloud_portal.hpp"
+#include "ota.hpp"
 #include "power.hpp"
 #include "settings.hpp"
 #include "sleepstate.hpp"
 #include "shell.hpp"
 #include "storage.hpp"
 
+#include "cJSON.h"
 #include "esp_check.h"
 #include "esp_console.h"
 #include "esp_attr.h"
@@ -98,9 +100,9 @@ constexpr uint32_t kBackoffMinMs  = 5'000;
 constexpr uint32_t kBackoffMaxMs  = 300'000;
 constexpr uint32_t kBackoffFactor = 2;
 
-// How much of the response to keep. All we ask of it is whether it contains
-// "ok":true, plus enough of the rest to be worth logging when it does not.
-constexpr size_t kRespCapBytes = 256;
+// How much of the response to keep: whether it contains "ok":true, the release the
+// Sheet wants this post on, and enough of the rest to be worth logging when it fails.
+constexpr size_t kRespCapBytes = 512;
 
 // Event bits driving the sync task.
 constexpr EventBits_t kBitGotIp     = 1u << 0;
@@ -467,6 +469,34 @@ esp_err_t http_post(const char* url, const std::string& body, int* out_status, R
 
 // --- The upload queue -------------------------------------------------------
 
+// Hand the release the reply names, if any, to the updater, which decides whether now
+// is the time.
+void take_offer(const char* reply) {
+  cJSON* root = cJSON_Parse(reply);
+  if (root == nullptr) {
+    if (std::strstr(reply, "\"fw\"") != nullptr) ESP_LOGW(kTag, "update offer cut short");
+    return;
+  }
+  const cJSON* fw  = cJSON_GetObjectItemCaseSensitive(root, "fw");
+  const cJSON* ver = cJSON_GetObjectItemCaseSensitive(fw, "version");
+  const cJSON* url = cJSON_GetObjectItemCaseSensitive(fw, "url");
+  const cJSON* sha = cJSON_GetObjectItemCaseSensitive(fw, "sha256");
+  if (cJSON_IsString(ver) && cJSON_IsString(url) && cJSON_IsString(sha)) {
+    if (std::strlen(ver->valuestring) >= ota::kVersionMax ||
+        std::strlen(url->valuestring) >= ota::kUrlMax ||
+        std::strlen(sha->valuestring) != ota::kSha256HexLen) {
+      ESP_LOGW(kTag, "update offer malformed: %s", ver->valuestring);
+    } else {
+      ota::Target t = {};
+      std::snprintf(t.version, sizeof(t.version), "%s", ver->valuestring);
+      std::snprintf(t.url, sizeof(t.url), "%s", url->valuestring);
+      std::snprintf(t.sha256, sizeof(t.sha256), "%s", sha->valuestring);
+      ota::offer(t);
+    }
+  }
+  cJSON_Delete(root);
+}
+
 enum class BatchResult { Ok, UpToDate, Failed };
 
 json::RecordJson to_json(const storage::TempRecord& r, uint32_t index) {
@@ -520,6 +550,8 @@ BatchResult upload_batch() {
   env.batt_mv  = usable ? b.pack_mv : -1;
   env.batt_pct = usable ? b.pct : -1;
   env.external = power::on_external_power();
+  env.firmware = ota::version();
+  env.rejected = ota::rejected();
 
   // Here as well as at init, for a log erased while the post runs.
   if (hwm > storage::next_index()) storage::raise_index_floor(hwm);
@@ -584,6 +616,9 @@ BatchResult upload_batch() {
   ESP_LOGI(kTag, "uploaded %u records, hwm=%lu/%lu", static_cast<unsigned>(n),
            static_cast<unsigned long>(new_hwm),
            static_cast<unsigned long>(storage::next_index()));
+  // A new image's self-test is exactly this: it reached the Sheet and was accepted.
+  ota::confirm();
+  take_offer(resp.buf);
   return BatchResult::Ok;
 }
 
@@ -676,7 +711,11 @@ void sync_task(void* /*arg*/) {
     // happens, and a lost link or a cleared endpoint means there is nowhere to
     // send it — in both cases the next event bit wakes us.
     for (;;) {
-      if (!is_connected() || !configured()) { set_sync_state(SyncState::Idle); break; }
+      // A download holds the queue: one TLS session at a time, and the records keep.
+      if (!is_connected() || !configured() || ota::busy()) {
+        set_sync_state(SyncState::Idle);
+        break;
+      }
       set_sync_state(SyncState::Syncing);
       const BatchResult r = upload_batch();
       if (r == BatchResult::Ok) { backoff = kBackoffMinMs; continue; }

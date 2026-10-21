@@ -194,6 +194,61 @@ dropped as duplicates of rows it already holds, and counted as sent. After
 `erase-flash` the upload mark is gone too, so delete that post's rows from the Sheet
 first, or its new readings will be dropped the same way.
 
+### Releases, and updating a fleet over the air
+
+**The version** is `THERMOPOST_VERSION` in the top-level `CMakeLists.txt`. Only
+`tools/release.sh` builds it as is; every other build reports it with `-dev` on the
+end, and a dev build is never replaced from the Sheet, so a post on the bench is not
+overwritten a minute after it was flashed. The Network page's last line shows the
+version, and `ota` on the serial console adds which slot is running and whether it
+has proved itself.
+
+**Releasing.** Bump the version, commit, then:
+
+```sh
+tools/release.sh "what changed"
+```
+
+It refuses a dirty tree or a version already released, builds into `build-release/`,
+publishes `thermopost-<version>.bin` to a public releases-only repo
+(`itayke/thermopost-releases`, or `$THERMOPOST_RELEASES_REPO`), and prints the row to
+paste into the Sheet's `firmware` tab. The source repo stays private; the post needs a
+URL it can download without credentials. Create that repo once with
+`gh repo create itayke/thermopost-releases --public`.
+
+**Rolling out** is two cells, both read on every upload, so nothing is redeployed:
+
+1. Put the new version in one post's `fw_pin` cell in `posts`, and watch its
+   `firmware` column change.
+2. Set `fw_target` in `config`, and clear the pin. Every post moves on its next upload.
+
+Rolling back is setting `fw_target` to the older version. See the Apps Script guide's
+**5. Firmware updates** for the tabs.
+
+**What a post does with an offer.** The upload reply names the release the Sheet wants
+when the post runs something else. The post takes it only when it is a release build,
+on external power or a well-charged battery, with no alarm open, and not already
+proving a new image. It streams the image into the idle slot, checks the sha256 the
+Sheet gave and the version the image itself declares, and reboots into it. Uploads
+wait while it downloads.
+
+**A new image has to prove itself** by making one successful upload. Until then it is
+pending: a deadline (a margin plus one record interval) rolls it back to the image it
+replaced, and so does any reboot, deep sleep included, so the post stays awake while
+it proves itself. A rolled-back release is reported in the `fw_rejected` column and
+not offered to that post again for a day of uptime. A download that fails is retried
+after a pause, not on every upload. Two consequences worth knowing: **Turn Off** on a
+post still proving itself brings it back on the old image, and a post doing quiet
+wakes takes an update only when it next comes up properly.
+
+**On the bench**, `ota <url> <sha256>` updates from any URL (power and alarm checks
+still apply, version checks do not), `ota confirm` keeps a pending image by hand, and
+`ota rollback` goes back to the other slot.
+
+**Trust.** Integrity is HTTPS plus the sha256 in the Sheet, so whoever can edit the
+Sheet chooses what the fleet runs. Signed images (secure boot) are the step that
+removes that, and belong with leaving demo mode.
+
 ## Usage
 
 Flashing brings the board up through `display → nvs → storage → settings → i2c →
@@ -1243,6 +1298,7 @@ code is. Push the IDF dependency into the wrapper beside it.
 ├── components/
 │   ├── board_i2c/          the one shared I²C bus (touch + codec + sensor)
 │   ├── cloud/              Wi-Fi + SNTP clock + the durable upload queue
+│   ├── ota/                the running version, checked updates, and the rollback self-test
 │   ├── audio/              ES8311 + I²S alarm tone (the only thing that makes noise)
 │   ├── display/            ILI9341 over SPI + LVGL + LEDC backlight
 │   ├── sensor/             MCP9808 driver + 1 Hz sampling task
@@ -1255,7 +1311,7 @@ code is. Push the IDF dependency into the wrapper beside it.
 │   ├── alert/              alarm decision logic (IDF-free, host-tested) + its tick
 │   ├── power/              the idle ladder, the battery sense, deep sleep and its wakes
 │   └── sleepstate/         what survives a deep sleep, and the clock it is kept on
-├── tools/                  the Apps Script sink for the Sheet, the screenshot grabber
+├── tools/                  the Apps Script sink for the Sheet, the release script, the screenshot grabber
 └── tests/host/             Catch2 unit tests, no IDF
 ```
 
@@ -1321,6 +1377,7 @@ returns.
 | ✅ Built | `shot` + `tools/screenshot.py` — real screen captures over USB, for the docs |
 | ✅ Built | the quiet wake — a timer wake records, judges the alarm and uploads on the dark cadence without lighting the screen, coming up fully only for an alarm or a charger |
 | ✅ Built | the OTA layout — two app slots, a rollback bootloader, and log numbering that never falls below the upload mark |
+| 🟨 Built | over-the-air updates — the version in every upload, releases targeted from the Sheet, sha256-checked downloads, a new image kept only once it uploads; not yet run on the bench |
 | 🟨 Gated | sleeping on idle — the ladder's fourth rung, behind `kAutoSleepReady` until the quiet wake has run on the bench and the sleep current is metered |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →

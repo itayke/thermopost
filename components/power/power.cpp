@@ -21,6 +21,7 @@
 #include "esp_adc/adc_oneshot.h"
 #include "esp_check.h"
 #include "esp_console.h"
+#include "esp_ota_ops.h"
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
 #include "driver/usb_serial_jtag.h"
@@ -360,6 +361,14 @@ bool sleeps(settings::PowerMode mode, bool external) {
   }
 }
 
+// A new image is rolled back by the next boot unless it has uploaded, and waking from a
+// deep sleep is a boot, so the post stays awake until the image has proved itself.
+bool image_proving() {
+  esp_ota_img_states_t st;
+  return esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
+         st == ESP_OTA_IMG_PENDING_VERIFY;
+}
+
 Tier tier_for(uint32_t idle, bool alarm_active, settings::PowerMode mode, bool external,
               uint32_t sleep_after_ms) {
   // An alarm outranks the whole ladder, and lights the screen rather than merely
@@ -375,7 +384,9 @@ Tier tier_for(uint32_t idle, bool alarm_active, settings::PowerMode mode, bool e
     return Tier::Active;
   }
 
-  if (idle >= sleep_after_ms) return kAutoSleepReady ? Tier::Asleep : Tier::Dark;
+  if (idle >= sleep_after_ms) {
+    return kAutoSleepReady && !image_proving() ? Tier::Asleep : Tier::Dark;
+  }
   if (idle >= sleep_after_ms * kDarkFractionNum / kFractionDen) return Tier::Dark;
   if (idle >= sleep_after_ms * kDimFractionNum / kFractionDen) return Tier::Dim;
   return Tier::Active;
@@ -580,6 +591,10 @@ int cmd_power(int argc, char** argv) {
     if (argc > 2) s = static_cast<uint32_t>(std::strtoul(argv[2], nullptr, 10));
     if (s == 0 || s > kNapMaxS) {
       std::printf("nap takes 1..%" PRIu32 " seconds\n", kNapMaxS);
+      return 1;
+    }
+    if (image_proving()) {
+      std::printf("not while new firmware is proving itself: the wake would roll it back\n");
       return 1;
     }
     nap(s);
