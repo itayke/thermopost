@@ -358,10 +358,12 @@ function post_(row) {
 // runs something else. Null for firmware too old to update, and for a dev build, which
 // the post would refuse anyway.
 function firmwareFor_(ss, cfg, post) {
+  // Read first, so the tab exists before any post can be offered a release from it.
+  const releases = releases_(ss);
   if (!post.firmware || /-dev$/.test(post.firmware)) return null;
   const want = post.fwPin || String(cfg.fw_target).trim();
   if (!want || want === post.firmware) return null;
-  const release = releases_(ss)[want];
+  const release = releases[want];
   if (!release) {
     console.warn(post.name + ' wants ' + want + ', which the firmware tab does not list');
     return null;

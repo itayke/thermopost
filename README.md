@@ -8,6 +8,10 @@ reading to a Google Sheet over Wi-Fi.
 
 By Itay Keren <itay@untame.com>. Copyright (c) 2026 Itay Keren.
 
+Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md):
+free to read, build, modify and share for personal, research, educational and other
+noncommercial use. Commercial use needs a separate license, so get in touch.
+
 > **Working, and not finished.** Everything the device does day to day is built and
 > most of it is confirmed on hardware: the screens, the settings, the alarm, the
 > Sheet upload, the idle ladder and battery sense. Sleeping between records is built
@@ -209,12 +213,11 @@ has proved itself.
 tools/release.sh "what changed"
 ```
 
-It refuses a dirty tree or a version already released, builds into `build-release/`,
-publishes `thermopost-<version>.bin` to a public releases-only repo
-(`itayke/thermopost-releases`, or `$THERMOPOST_RELEASES_REPO`), and prints the row to
-paste into the Sheet's `firmware` tab. The source repo stays private; the post needs a
-URL it can download without credentials. Create that repo once with
-`gh repo create itayke/thermopost-releases --public`.
+It refuses a dirty tree, an unpushed commit or a version already released, builds into
+`build-release/`, publishes `thermopost-<version>.bin` as a GitHub release of this repo
+tagged at the commit it was built from (`$THERMOPOST_RELEASES_REPO` names another), and
+prints the row to paste into the Sheet's `firmware` tab. The repo has to be public: a
+post downloads the release without credentials.
 
 **Rolling out** is two cells, both read on every upload, so nothing is redeployed:
 

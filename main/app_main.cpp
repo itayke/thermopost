@@ -7,7 +7,7 @@
 //  reading leaves a min/max band, and mirrors every reading to a Google Sheet.
 //
 //  Author:    Itay Keren <itay@untame.com>
-//  Copyright: (c) 2026 Itay Keren. All rights reserved.
+//  Copyright: (c) 2026 Itay Keren. PolyForm Noncommercial 1.0.0, see LICENSE.md.
 // ============================================================================
 //
 // Boot order, each step logging and continuing where it can:

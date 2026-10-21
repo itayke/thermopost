@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build a release, publish it to the public releases repo, and print the row for the
-# Sheet's firmware tab.
+# Build a release, publish it as a GitHub release tagged at the commit it was built
+# from, and print the row for the Sheet's firmware tab.
 #
 #   tools/release.sh ["what changed"]
 #
@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-REPO="${THERMOPOST_RELEASES_REPO:-itayke/thermopost-releases}"
+REPO="${THERMOPOST_RELEASES_REPO:-itayke/thermopost}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Its own directory, so the release flag never lingers in the dev build's configure.
 BUILD="$ROOT/build-release"
@@ -33,19 +33,22 @@ command -v idf.py >/dev/null || {
     exit 1
 }
 
+COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
+# The commit has to be on GitHub for the tag to point at it.
+if ! git -C "$ROOT" branch -r --contains "$COMMIT" | grep -q .; then
+    echo "push first: the release is tagged at $COMMIT" >&2
+    exit 1
+fi
+
 idf.py -C "$ROOT" -B "$BUILD" -DTHERMOPOST_RELEASE=1 build
 
 BIN="$BUILD/thermopost-$VERSION.bin"
 cp "$BUILD/thermopost.bin" "$BIN"
 SHA="$(shasum -a 256 "$BIN" | cut -d' ' -f1)"
-COMMIT="$(git -C "$ROOT" rev-parse --short HEAD)"
-
-gh release create "$TAG" "$BIN" --repo "$REPO" --title "$TAG" \
-    --notes "${NOTES:-Thermopost $VERSION}"$'\n\n'"Source: $COMMIT"
+gh release create "$TAG" "$BIN" --repo "$REPO" --title "$TAG" --target "$COMMIT" \
+    --notes "${NOTES:-Thermopost $VERSION}"
 
 URL="https://github.com/$REPO/releases/download/$TAG/thermopost-$VERSION.bin"
 echo
 echo "Paste into the firmware tab (version, url, sha256, notes):"
-printf '%s\t%s\t%s\t%s\n' "$VERSION" "$URL" "$SHA" "${NOTES:-$COMMIT}"
-echo
-echo "Then tag the source: git tag $TAG $COMMIT"
+printf '%s\t%s\t%s\t%s\n' "$VERSION" "$URL" "$SHA" "${NOTES:-${COMMIT:0:7}}"
