@@ -1380,7 +1380,7 @@ returns.
 | ✅ Built | `shot` + `tools/screenshot.py` — real screen captures over USB, for the docs |
 | ✅ Built | the quiet wake — a timer wake records, judges the alarm and uploads on the dark cadence without lighting the screen, coming up fully only for an alarm or a charger |
 | ✅ Built | the OTA layout — two app slots, a rollback bootloader, and log numbering that never falls below the upload mark |
-| 🟨 Built | over-the-air updates — the version in every upload, releases targeted from the Sheet, sha256-checked downloads, a new image kept only once it uploads; not yet run on the bench |
+| ✅ Verified | over-the-air updates — by hand from the console, then from a post's `fw_pin`, a downgrade through the Sheet, and a fleet rollout from `fw_target`, each new image kept only once it uploaded. A rejected hash and a deadline rollback are built but not yet exercised |
 | 🟨 Gated | sleeping on idle — the ladder's fourth rung, behind `kAutoSleepReady` until the quiet wake has run on the bench and the sleep current is metered |
 
 Build order: display → sensor → touch → main screen → menu → alerts → cloud →
