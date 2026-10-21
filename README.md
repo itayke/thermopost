@@ -12,6 +12,10 @@ Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md):
 free to read, build, modify and share for personal, research, educational and other
 noncommercial use. Commercial use needs a separate license, so get in touch.
 
+**Using a post rather than building one?** Start with
+[Getting Started](GETTING_STARTED.md), a short guide to the screen, the alarm, Wi-Fi
+and the Sheet.
+
 > **Working, and not finished.** Everything the device does day to day is built and
 > most of it is confirmed on hardware: the screens, the settings, the alarm, the
 > Sheet upload, the idle ladder and battery sense. Sleeping between records is built
@@ -1308,6 +1312,7 @@ code is. Push the IDF dependency into the wrapper beside it.
 
 ```
 .
+├── GETTING_STARTED.md      the guide for someone using a post
 ├── partitions.csv          nvs + otadata + two 3 MB app slots + littlefs (~9.9 MB)
 ├── sdkconfig.defaults      PSRAM, flash, partition table, FreeRTOS tick, console, LVGL
 ├── main/                   boot sequencer, board_pins, opt-in bring-up probe
