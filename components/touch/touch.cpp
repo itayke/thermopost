@@ -11,6 +11,8 @@
 
 #include "esp_lcd_touch_ft5x06.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 namespace thermopost::touch {
 namespace {
@@ -237,5 +239,42 @@ esp_err_t init() {
 }
 
 lv_indev_t* indev() { return s_indev; }
+
+bool held(uint32_t hold_ms) {
+  // The FT6x36's touch count, in the low nibble of TD_STATUS; anything above its two
+  // points is a frame it has not finished.
+  constexpr uint8_t  kRegTdStatus = 0x02;
+  constexpr uint8_t  kTouchCountMask = 0x0F;
+  constexpr uint8_t  kMaxPoints = 2;
+  constexpr uint32_t kPollMs = 20;
+  constexpr int      kXferTimeoutMs = 20;
+
+  i2c_master_bus_handle_t bus = board_i2c::bus();
+  if (bus == nullptr) return true;
+  const i2c_device_config_t dev_cfg = {
+      .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+      .device_address = board::kTouchI2cAddr,
+      .scl_speed_hz = board::kI2cFreqHz,
+  };
+  i2c_master_dev_handle_t dev = nullptr;
+  if (i2c_master_bus_add_device(bus, &dev_cfg, &dev) != ESP_OK) return true;
+
+  bool still = true;
+  for (uint32_t waited = 0; still && waited < hold_ms; waited += kPollMs) {
+    uint8_t status = 0;
+    const esp_err_t e = i2c_master_transmit_receive(dev, &kRegTdStatus, 1, &status, 1,
+                                                    kXferTimeoutMs);
+    if (e != ESP_OK) {
+      ESP_LOGW(kTag, "controller unreadable (%s); taking the touch as held",
+               esp_err_to_name(e));
+      break;
+    }
+    const uint8_t points = status & kTouchCountMask;
+    still = points > 0 && points <= kMaxPoints;
+    if (still) vTaskDelay(pdMS_TO_TICKS(kPollMs));
+  }
+  i2c_master_bus_rm_device(dev);
+  return still;
+}
 
 }  // namespace thermopost::touch

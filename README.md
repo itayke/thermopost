@@ -753,6 +753,12 @@ device until someone came back to it. It deep-sleeps with exactly one wake sourc
 the touch controller's interrupt on `IO17`, so **a touch on the screen is the way
 back and nothing else is**.
 
+**The touch has to be held.** Anything brushing the glass of a post in a bag would
+otherwise turn it on. A wake from Off brings up only the I²C bus and reads the
+controller's touch count directly, and goes straight back to sleep unless the finger
+is still down a second later, before the display has lit. If the controller can't be
+read, the post turns on anyway rather than refusing to.
+
 It started out waking on USB instead, and that was wrong in both directions:
 switching off with a part-charged pack plugged in turned the post back on partway
 through the charge. The mistake was testing a *level* where the question is an

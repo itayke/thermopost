@@ -96,7 +96,13 @@ bool on_external_power();
 // As off as software gets on this board, which is not all the way: without cutting
 // the rail there is always residual draw, and how much depends on what else on the
 // module stays awake.
+//
+// Coming back takes a held touch, not a brush: app_main checks the finger is still
+// down and calls stay_off() if it is not, so a post in a bag stays off.
 [[noreturn]] void turn_off();
+
+// Back to Off from a wake that did not count, before the display is up.
+[[noreturn]] void stay_off();
 
 // Why this boot happened. Decided once, in resume_from_off().
 enum class Wake : uint8_t {

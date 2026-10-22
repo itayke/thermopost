@@ -8,7 +8,7 @@ and sends every reading to a Google Sheet.
 - **Plug in the USB-C cable** and the post starts by itself. The cable also charges its battery.
 - **Unplugged**, it keeps running on its battery. The battery icon at the top left shows how full it is, and a lightning bolt means it is charging.
 - **The screen dims and goes dark** when nobody touches it, to save power. Tap it to wake it. It keeps measuring the whole time.
-- **To switch it off:** Menu › Power › **Turn Off**, then tap again when it asks "Sure?". **To switch it back on, touch the screen.**
+- **To switch it off:** Menu › Power › **Turn Off**, then tap again when it asks "Sure?". **To switch it back on, press and hold the screen for about two seconds.**
 
 ## 2. Reading the screen
 
@@ -106,7 +106,7 @@ screen dark.
 
 | You see | Try this |
 | --- | --- |
-| The screen is black | Tap it. If nothing happens, plug in the USB-C cable. |
+| The screen is black | Tap it. If it was switched off, press and hold for about two seconds. If nothing happens, plug in the USB-C cable. |
 | NO READING, or an amber number | Check the sensor's cable is pushed in at both ends. It recovers by itself once it's reseated. |
 | The clock shows "no clock" | It hasn't reached Wi-Fi yet. Check Menu › Network, or join Wi-Fi again (section 5). |
 | The Sheet isn't updating | Check the post's Wi-Fi first. A post on battery with its screen dark sends every 15 minutes or so, so give it time. |

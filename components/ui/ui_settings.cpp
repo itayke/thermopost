@@ -867,7 +867,7 @@ constexpr const char* kModeHint = "Screen mode";
 // so nothing has to be explained beside it.
 constexpr const char* kOffIdle    = "Turn Off";
 constexpr const char* kOffConfirm = "Sure?";
-constexpr const char* kOffHint    = "Touch to wake";
+constexpr const char* kOffHint    = "Hold to wake";
 constexpr uint32_t kOffConfirmMs = 4000;
 lv_timer_t* s_off_timer = nullptr;
 

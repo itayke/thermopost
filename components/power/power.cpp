@@ -805,7 +805,12 @@ void arm_wakes(uint32_t timer_s, bool sensor) {
 
 [[noreturn]] void sleep_now() {
   std::fflush(stdout);
-  usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(kSleepFlushMs));
+  // Only once the console has installed the driver: a wake that sleeps again before the
+  // shell is up (a brush from Off, a quiet wake) has nothing buffered, and the wait
+  // dereferences the driver's state without checking it exists.
+  if (usb_serial_jtag_is_driver_installed()) {
+    usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(kSleepFlushMs));
+  }
   esp_deep_sleep_start();
 }
 
@@ -824,11 +829,16 @@ Wake classify_wake() {
 }  // namespace
 
 void turn_off() {
-  ESP_LOGW(kTag, "switching off; a touch on the screen is the way back");
-  s_off_magic = kOffMagic;
+  ESP_LOGW(kTag, "switching off; a held touch on the screen is the way back");
   // Blanked now rather than when the rail drops, so the screen goes out on the tap.
   display::set_on(false);
-  // Touch only. Off means off: no timer, and not the sensor either.
+  stay_off();
+}
+
+void stay_off() {
+  s_off_magic = kOffMagic;
+  // Touch only. Off means off: no timer, and not the sensor either. A finger still
+  // lifting wakes it once more, and that wake goes straight back here.
   arm_wakes(0, /*sensor=*/false);
   sleep_now();
 }

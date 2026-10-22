@@ -97,6 +97,10 @@ constexpr uint32_t kFirstReadingPollMs = 10;
 // redirect; a backlog longer than that finishes on a later wake.
 constexpr uint32_t kQuietUploadTimeoutMs = 30'000;
 
+// How long a touch has to stay on the glass to turn the post back on, counted after
+// the boot it woke; a brush against a bag is shorter.
+constexpr uint32_t kTurnOnHoldMs = 1000;
+
 sensor::Reading wait_for_reading() {
   const int64_t until = esp_timer_get_time() + kFirstReadingWaitUs;
   sensor::Reading r = sensor::latest();
@@ -152,6 +156,14 @@ extern "C" void app_main(void) {
   power::resume_from_off();
   if (power::wake_cause() != power::Wake::PowerOn) {
     ESP_LOGI(kTag, "woke: %s", power::wake_name(power::wake_cause()));
+  }
+  // Before the display, so a touch that does not count never lights anything.
+  if (power::wake_cause() == power::Wake::FromOff) {
+    step("i2c", board_i2c::init());
+    if (!touch::held(kTurnOnHoldMs)) {
+      ESP_LOGI(kTag, "touch too short to turn on; staying off");
+      power::stay_off();
+    }
   }
   const bool quiet_urgent = power::wake_cause() == power::Wake::Timer && quiet_wake();
 

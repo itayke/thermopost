@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "esp_err.h"
 #include "lvgl.h"
 
@@ -22,5 +24,10 @@ esp_err_t init();
 // The LVGL input device, or nullptr before a successful init(). Needed by any
 // code that wants lv_indev_get_point() or wants to reset a long press.
 lv_indev_t* indev();
+
+// Whether a finger stays on the glass for `hold_ms`, read straight from the controller,
+// so it works before init() and needs only board_i2c. True when the controller cannot
+// be read, so a post never refuses to turn on over a fault.
+bool held(uint32_t hold_ms);
 
 }  // namespace thermopost::touch
