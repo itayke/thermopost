@@ -1101,12 +1101,18 @@ cadence costs roughly a twelfth of the radio time of a five-minute one, and
 `kBatchSize` is already one hour of history per request.
 
 The Recording page carries two figures, `Upload every` and `When dark`, and **the
-split is on the idle tier, not on the supply.** That matters. `on_external_power()` is
-a heuristic that cannot tell a just-unplugged pack from a charging one for minutes,
-while the tier is a fact — and it is the better question anyway: what makes a radio
-session expensive is the post being otherwise idle, not where its current comes from.
-A lit post is burning tens of milliamps regardless and one more handshake is marginal;
-a dark one is doing almost nothing else, so the handshake is the entire budget.
+split is on the idle tier first.** What makes a radio session expensive is the post
+being otherwise idle: a lit post is burning tens of milliamps regardless and one more
+handshake is marginal, while a dark one is doing almost nothing else, so the handshake
+is the entire budget.
+
+**`When dark` applies only on battery.** A dark post on external power keeps the
+`Upload every` figure, because it has no battery to save. `on_external_power()` is a
+heuristic that cannot tell a just-unplugged pack from a charging one for minutes, but
+misjudging it costs only a few minutes of the other cadence. A post waking from sleep
+batches whatever its supply, since sleeping was its power mode's choice. The `gap_s`
+each batch reports stays the longer of the two figures, so unplugging a post does not
+set off a false silence alert before its first batch on battery.
 
 `Upload every` defaults to *every record* — a post someone is standing in front of
 should have a Sheet that matches its screen. `When dark` defaults to **15 minutes**.

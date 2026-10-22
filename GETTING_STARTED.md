@@ -98,8 +98,9 @@ too hot or too cold, a low battery, and a post that has stopped reporting.
 - For **one post**: fill in the same two columns in that post's row of the posts tab. This overrides config.
 - **Blank** in both places lets each post use the range set on its own screen.
 
-A post picks up the change the next time it sends readings: within a minute if its
-screen is on, or within about 15 minutes if it has gone dark.
+A post picks up the change the next time it sends readings: within a minute if it's
+plugged in or its screen is on, or within about 15 minutes if it's on battery with its
+screen dark.
 
 ## 7. If something looks wrong
 
@@ -108,6 +109,6 @@ screen is on, or within about 15 minutes if it has gone dark.
 | The screen is black | Tap it. If nothing happens, plug in the USB-C cable. |
 | NO READING, or an amber number | Check the sensor's cable is pushed in at both ends. It recovers by itself once it's reseated. |
 | The clock shows "no clock" | It hasn't reached Wi-Fi yet. Check Menu › Network, or join Wi-Fi again (section 5). |
-| The Sheet isn't updating | Check the post's Wi-Fi first. A post with a dark screen sends every 15 minutes or so, so give it time. |
+| The Sheet isn't updating | Check the post's Wi-Fi first. A post on battery with its screen dark sends every 15 minutes or so, so give it time. |
 | It alarms but the tank is fine | The safe range may be wrong for this tank. Check it on the screen's top right, then change it on the post or in the Sheet. |
 | Anything else | Note what the screen shows, take a photo, and send it to whoever gave you the post. |

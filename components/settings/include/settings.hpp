@@ -56,18 +56,17 @@ constexpr uint16_t kGraphPointsMax = 480;
 constexpr uint16_t kGraphPointsDefault = 120;
 
 // How long records may queue before the radio comes up to send them — one figure for
-// a post someone is looking at, one for a post whose screen has gone dark.
+// a post someone is looking at, one for a post whose screen has gone dark on battery.
 //
 // Minutes rather than a record count, deliberately. A count would mean a different
 // span on every post in a fleet, because the span is count x interval_s: "every 60
 // records" is an hour at the default cadence and two and a half days at the slowest
 // one. Minutes are what the setting is actually about.
 //
-// The split is on the idle tier, NOT on the supply, and that is the important part.
-// power::on_external_power() is a heuristic — it cannot tell a just-unplugged pack
-// from a charging one for minutes — while the tier is a fact. It is also the better
-// question: what makes a radio session expensive is the post being otherwise idle,
-// not where its current comes from. A lit post is burning tens of milliamps anyway
+// The split is on the idle tier first: what makes a radio session expensive is the post
+// being otherwise idle. A dark post on external power still keeps the lit figure, since
+// it has no battery to save; power::on_external_power() is a heuristic, but misjudging
+// it costs only a few minutes of the other cadence. A lit post is burning tens of milliamps anyway
 // and one more TLS handshake is marginal; a dark one is doing almost nothing else,
 // so the handshake is the entire budget. Associating and completing that handshake
 // costs far more than taking a reading, and the cost is per *session* rather than per

@@ -665,9 +665,16 @@ int64_t now_ms() { return esp_timer_get_time() / kUsPerMs; }
 // Dark rather than Asleep, so the behaviour exists and can be watched on a post that
 // only blanks its panel, long before one that sleeps. Safe before power::init(),
 // which answers Active.
+//
+// A dark post on external power keeps the lit cadence: it has no battery to save, and
+// misjudging the supply costs only a few minutes of either cadence. A sleeping post
+// batches whatever its supply, because sleeping was its mode's choice.
 uint16_t cadence_min() {
   const settings::Settings cfg = settings::get();
-  return power::tier() >= power::Tier::Dark ? cfg.upload_dark_min : cfg.upload_every_min;
+  const power::Tier t = power::tier();
+  const bool batch = t == power::Tier::Asleep ||
+                     (t == power::Tier::Dark && !power::on_external_power());
+  return batch ? cfg.upload_dark_min : cfg.upload_every_min;
 }
 
 bool upload_due() {
